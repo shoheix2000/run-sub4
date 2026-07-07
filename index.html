@@ -1,0 +1,890 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RUN LOG / SUB-4</title>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
+<script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>body{margin:0;background:#EDF3F9;-webkit-text-size-adjust:100%;}</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useRef } = React;
+const { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
+  Tooltip, ReferenceLine, ResponsiveContainer } = Recharts;
+
+// ---- 定数 ----
+const SUB4_PACE_SEC = 341; // 5'41"/km
+const M_PACE_SEC = 327;    // 5'27"/km
+const RUN_TYPES = ["ジョグ", "リカバリー走", "ビルドアップ走", "テンポ走", "Mペース走", "ロング走", "インターバル", "レース", "その他"];
+const STORAGE_KEY = "running-log-v1";
+const RACE_KEY = "running-log-race";
+const storeGet = async (k) => localStorage.getItem(k);
+const storeSet = async (k, v) => { try { localStorage.setItem(k, v); return true; } catch { return false; } };
+const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
+
+const C = {
+  bg: "#EDF3F9", ink: "#1A2B3C", sub: "#5A7186",
+  accent: "#004C87", accentSoft: "rgba(0,76,135,0.10)",
+  line: "#C9D9E8", ok: "#1E8A5A", card: "#FFFFFF",
+};
+
+// ---- ユーティリティ ----
+const pad = (n) => String(n).padStart(2, "0");
+const fmtPace = (sec) => (sec && isFinite(sec) ? `${Math.floor(sec / 60)}'${pad(Math.round(sec % 60))}"` : "–");
+const fmtDur = (sec) => {
+  if (!sec) return "–";
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = Math.round(sec % 60);
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+};
+const ymd = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const mondayOf = (dateStr) => {
+  const d = new Date(dateStr + "T00:00:00");
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  return ymd(d);
+};
+
+// 旧種別名からの変換
+const TYPE_MIGRATE = { "回復ジョグ": "リカバリー走", "ビルドアップ": "ビルドアップ走" };
+const migrate = (runs) => runs.map((r) => ({ ...r, type: TYPE_MIGRATE[r.type] || r.type }));
+
+// ---- 初期データ（チャット「神戸マラソンのサブ４達成に向けたトレーニング計画」より）----
+const INITIAL_DATA = [
+  { id: "s0502", date: "2026-05-02", type: "ビルドアップ走", distance: 9.0, duration: 2736, pace: 304, avgHr: null, maxHr: null, memo: "平均5'04\"/km ※タイムはペースからの推定" },
+  { id: "s0507", date: "2026-05-07", type: "ビルドアップ走", distance: 8.0, duration: 2376, pace: 297, avgHr: null, maxHr: null, memo: "平均4'57\"/km ※タイムはペースからの推定" },
+  { id: "s0510", date: "2026-05-10", type: "ジョグ", distance: 10.0, duration: 3750, pace: 375, avgHr: 141, maxHr: null, memo: "6'10〜6'23\"/kmで安定 ※距離・タイムは推定含む" },
+  { id: "s0516", date: "2026-05-16", type: "ロング走", distance: 20.0, duration: 7180, pace: 359, avgHr: null, maxHr: 171, memo: "終盤15km以降に心拍165〜171へ上昇。心拍管理が課題と分析 ※タイム推定" },
+  { id: "s0530", date: "2026-05-30", type: "ロング走", distance: 21.0, duration: 7560, pace: 360, avgHr: null, maxHr: null, memo: "気温18度・5月の最長距離 ※ペース推定" },
+  { id: "s0531", date: "2026-05-31", type: "リカバリー走", distance: 5.0, duration: 2105, pace: 421, avgHr: 136, maxHr: null, memo: "7'01\"/km ※距離は推定" },
+  { id: "s0606", date: "2026-06-06", type: "ロング走", distance: 22.04, duration: 7934, pace: 360, avgHr: 153, maxHr: null, memo: "気温23度。接地251ms・ピッチ170 ※ペース推定" },
+  { id: "s0607", date: "2026-06-07", type: "リカバリー走", distance: 2.03, duration: 834, pace: 411, avgHr: 130, maxHr: 136, memo: "気温20度。雨により2kmで中断。心拍140超えなしの理想的リカバリー。前日22km走の翌日として心拍130は回復順調のサイン" },
+  { id: "s0609", date: "2026-06-09", type: "ビルドアップ走", distance: 8.03, duration: 2666, pace: 332, avgHr: 158, maxHr: 172, memo: "通勤前8km。5'54\"→5'03\"/kmへ段階的加速。7km目がベスト（5'03\"・心拍172・接地205ms）。Tペース上限〜RCT手前まで到達" },
+  { id: "s0611", date: "2026-06-11", type: "ジョグ", distance: 10.0, duration: 3700, pace: 370, avgHr: 147, maxHr: null, memo: "ジョグ+流し ※ペース推定" },
+  { id: "s0613", date: "2026-06-13", type: "ロング走", distance: 20.0, duration: 7200, pace: 360, avgHr: 152, maxHr: null, memo: "気温24度 ※ペース推定" },
+  { id: "s0614", date: "2026-06-14", type: "リカバリー走", distance: 5.06, duration: 2287, pace: 452, avgHr: 133, maxHr: 135, memo: "気温21度・曇り。心拍135以内を厳守成功（過去最低の平均133）。最終kmは陸橋+小雨で135まで上昇するも許容内。教科書通りの回復走と評価" },
+  { id: "s0621", date: "2026-06-21", type: "ロング走", distance: 25.0, duration: 9125, pace: 365, avgHr: null, maxHr: null, memo: "距離新記録25km ※ペース推定" },
+  { id: "s0627", date: "2026-06-27", type: "Mペース走", distance: 8.0, duration: 2680, pace: 335, avgHr: null, maxHr: 166, memo: "5'28〜5'41\"/km・気温24〜25度。11月の気温15度なら5'25\"/km・心拍155で走れる見込みと分析 ※日付推定" },
+  { id: "s0704", date: "2026-07-04", type: "ロング走", distance: 28.0, duration: 10080, pace: 360, avgHr: 153, maxHr: null, memo: "気温23度・距離新記録28km。6週前の22km走（23度）と同じ平均心拍153で+6km。暑熱順化と持久力向上を確認 ※ペース推定" },
+];
+
+// ---- COROSエクスポート（FITファイル）取込データ ----
+const FIT_IMPORT = [{"id":"fit-474443160305565999","date":"2026-01-03","type":"ジョグ","distance":7.46,"duration":2462,"pace":330.0,"avgHr":153,"maxHr":174,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":0.87,"sec":300,"pace":345,"hr":142},{"dist":4.5,"sec":1500,"pace":333,"hr":151},{"dist":0.59,"sec":180,"pace":304,"hr":161},{"dist":0.64,"sec":180,"pace":280,"hr":168},{"dist":0.86,"sec":300,"pace":348,"hr":163}]},{"id":"fit-474466326004400527","date":"2026-01-04","type":"ジョグ","distance":9.07,"duration":3024,"pace":333.4,"avgHr":151,"maxHr":177,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":9.07,"sec":3024,"pace":333,"hr":151}]},{"id":"fit-474499731467305262","date":"2026-01-06","type":"ジョグ","distance":5.75,"duration":1940,"pace":337.4,"avgHr":156,"maxHr":170,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":347,"pace":347,"hr":140},{"dist":1.0,"sec":338,"pace":338,"hr":153},{"dist":1.0,"sec":331,"pace":331,"hr":158},{"dist":1.0,"sec":321,"pace":321,"hr":160},{"dist":1.0,"sec":311,"pace":311,"hr":165},{"dist":0.75,"sec":290,"pace":386,"hr":158}]},{"id":"fit-474524086605742083","date":"2026-01-07","type":"ジョグ","distance":11.04,"duration":3962,"pace":358.9,"avgHr":149,"maxHr":168,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":374,"pace":374,"hr":135},{"dist":1.0,"sec":368,"pace":368,"hr":144},{"dist":1.0,"sec":362,"pace":362,"hr":148},{"dist":1.0,"sec":361,"pace":361,"hr":147},{"dist":1.0,"sec":355,"pace":355,"hr":147},{"dist":1.0,"sec":351,"pace":351,"hr":150},{"dist":1.0,"sec":358,"pace":358,"hr":150},{"dist":1.0,"sec":356,"pace":356,"hr":152},{"dist":1.0,"sec":354,"pace":354,"hr":151},{"dist":1.0,"sec":308,"pace":308,"hr":161},{"dist":1.0,"sec":393,"pace":393,"hr":151},{"dist":0.04,"sec":15,"pace":415,"hr":146}]},{"id":"fit-474592307876757609","date":"2026-01-10","type":"ジョグ","distance":6.18,"duration":2095,"pace":339.0,"avgHr":150,"maxHr":159,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":368,"pace":368,"hr":134},{"dist":1.0,"sec":339,"pace":339,"hr":150},{"dist":1.0,"sec":336,"pace":336,"hr":152},{"dist":1.0,"sec":331,"pace":331,"hr":153},{"dist":1.0,"sec":324,"pace":324,"hr":154},{"dist":1.0,"sec":321,"pace":321,"hr":155},{"dist":0.18,"sec":73,"pace":414,"hr":156}]},{"id":"fit-474615472782868788","date":"2026-01-11","type":"ジョグ","distance":6.31,"duration":2125,"pace":336.8,"avgHr":151,"maxHr":166,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":367,"pace":367,"hr":135},{"dist":1.0,"sec":346,"pace":346,"hr":147},{"dist":1.0,"sec":339,"pace":339,"hr":152},{"dist":1.0,"sec":323,"pace":323,"hr":156},{"dist":1.0,"sec":318,"pace":318,"hr":156},{"dist":1.0,"sec":309,"pace":309,"hr":161},{"dist":0.31,"sec":119,"pace":381,"hr":152}]},{"id":"fit-474669074230575107","date":"2026-01-13","type":"ジョグ","distance":10.02,"duration":3367,"pace":336.0,"avgHr":151,"maxHr":170,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":347,"pace":347,"hr":135},{"dist":1.0,"sec":348,"pace":348,"hr":147},{"dist":1.0,"sec":333,"pace":333,"hr":149},{"dist":1.0,"sec":328,"pace":328,"hr":149},{"dist":1.0,"sec":335,"pace":335,"hr":152},{"dist":1.0,"sec":332,"pace":332,"hr":155},{"dist":1.0,"sec":333,"pace":333,"hr":155},{"dist":1.0,"sec":328,"pace":328,"hr":157},{"dist":1.0,"sec":312,"pace":312,"hr":163},{"dist":1.0,"sec":361,"pace":361,"hr":154},{"dist":0.02,"sec":7,"pace":367,"hr":152}]},{"id":"fit-474699530114203953","date":"2026-01-14","type":"ジョグ","distance":8.61,"duration":3218,"pace":373.8,"avgHr":141,"maxHr":178,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":377,"pace":377,"hr":139},{"dist":1.0,"sec":370,"pace":370,"hr":143},{"dist":1.0,"sec":366,"pace":366,"hr":144},{"dist":1.0,"sec":373,"pace":373,"hr":138},{"dist":1.0,"sec":378,"pace":378,"hr":138},{"dist":1.0,"sec":372,"pace":372,"hr":144},{"dist":1.0,"sec":370,"pace":370,"hr":138},{"dist":1.0,"sec":371,"pace":371,"hr":137},{"dist":0.61,"sec":236,"pace":386,"hr":148}]},{"id":"fit-474722728048361571","date":"2026-01-15","type":"ジョグ","distance":9.07,"duration":3326,"pace":366.7,"avgHr":141,"maxHr":157,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":2.31,"sec":900,"pace":390,"hr":128},{"dist":0.65,"sec":240,"pace":370,"hr":137},{"dist":0.73,"sec":240,"pace":329,"hr":149},{"dist":0.65,"sec":240,"pace":370,"hr":141},{"dist":0.73,"sec":240,"pace":330,"hr":148},{"dist":0.65,"sec":240,"pace":367,"hr":144},{"dist":0.73,"sec":240,"pace":326,"hr":152},{"dist":0.64,"sec":240,"pace":374,"hr":146},{"dist":0.73,"sec":240,"pace":328,"hr":152},{"dist":1.25,"sec":506,"pace":404,"hr":142}]},{"id":"fit-474759786636804200","date":"2026-01-17","type":"ジョグ","distance":10.52,"duration":3700,"pace":351.7,"avgHr":154,"maxHr":167,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":383,"pace":383,"hr":130},{"dist":1.0,"sec":369,"pace":369,"hr":144},{"dist":1.0,"sec":346,"pace":346,"hr":153},{"dist":1.0,"sec":346,"pace":346,"hr":153},{"dist":1.0,"sec":342,"pace":342,"hr":155},{"dist":1.0,"sec":339,"pace":339,"hr":157},{"dist":1.0,"sec":338,"pace":338,"hr":160},{"dist":1.0,"sec":340,"pace":340,"hr":160},{"dist":1.0,"sec":335,"pace":335,"hr":163},{"dist":1.0,"sec":346,"pace":346,"hr":161},{"dist":0.52,"sec":213,"pace":409,"hr":160}]},{"id":"fit-474785009358635111","date":"2026-01-18","type":"ロング走","distance":26.07,"duration":9614,"pace":368.8,"avgHr":151,"maxHr":168,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":364,"pace":364,"hr":131},{"dist":1.0,"sec":364,"pace":364,"hr":144},{"dist":1.0,"sec":362,"pace":362,"hr":144},{"dist":1.0,"sec":362,"pace":362,"hr":144},{"dist":1.0,"sec":362,"pace":362,"hr":143},{"dist":1.0,"sec":361,"pace":361,"hr":146},{"dist":1.0,"sec":363,"pace":363,"hr":149},{"dist":1.0,"sec":369,"pace":369,"hr":149},{"dist":1.0,"sec":365,"pace":365,"hr":151},{"dist":1.0,"sec":368,"pace":368,"hr":150},{"dist":1.0,"sec":366,"pace":366,"hr":151},{"dist":1.0,"sec":363,"pace":363,"hr":152},{"dist":1.0,"sec":363,"pace":363,"hr":152},{"dist":1.0,"sec":384,"pace":384,"hr":159},{"dist":1.0,"sec":372,"pace":372,"hr":145},{"dist":1.0,"sec":384,"pace":384,"hr":152},{"dist":1.0,"sec":371,"pace":371,"hr":151},{"dist":1.0,"sec":362,"pace":362,"hr":149},{"dist":1.0,"sec":364,"pace":364,"hr":158},{"dist":1.0,"sec":367,"pace":367,"hr":158},{"dist":1.0,"sec":370,"pace":370,"hr":158},{"dist":1.0,"sec":383,"pace":383,"hr":159},{"dist":1.0,"sec":363,"pace":363,"hr":157},{"dist":1.0,"sec":353,"pace":353,"hr":163},{"dist":1.0,"sec":345,"pace":345,"hr":160},{"dist":1.0,"sec":426,"pace":426,"hr":158},{"dist":0.07,"sec":28,"pace":421,"hr":158}]},{"id":"fit-474839179899994216","date":"2026-01-20","type":"ジョグ","distance":8.52,"duration":3297,"pace":387.0,"avgHr":141,"maxHr":167,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":405,"pace":405,"hr":132},{"dist":1.0,"sec":389,"pace":389,"hr":137},{"dist":1.0,"sec":386,"pace":386,"hr":138},{"dist":1.0,"sec":391,"pace":391,"hr":139},{"dist":1.0,"sec":385,"pace":385,"hr":140},{"dist":1.0,"sec":385,"pace":385,"hr":140},{"dist":1.0,"sec":387,"pace":387,"hr":143},{"dist":1.0,"sec":348,"pace":348,"hr":155},{"dist":0.52,"sec":216,"pace":413,"hr":155}]},{"id":"fit-474861177648742513","date":"2026-01-21","type":"ジョグ","distance":6.01,"duration":2328,"pace":387.4,"avgHr":136,"maxHr":148,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":393,"pace":393,"hr":130},{"dist":1.0,"sec":388,"pace":388,"hr":135},{"dist":1.0,"sec":382,"pace":382,"hr":136},{"dist":1.0,"sec":387,"pace":387,"hr":136},{"dist":1.0,"sec":387,"pace":387,"hr":138},{"dist":1.0,"sec":385,"pace":385,"hr":140}]},{"id":"fit-474885145982173287","date":"2026-01-22","type":"ジョグ","distance":9.05,"duration":3268,"pace":361.1,"avgHr":148,"maxHr":170,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":2.34,"sec":900,"pace":383,"hr":137},{"dist":0.65,"sec":240,"pace":370,"hr":140},{"dist":0.73,"sec":240,"pace":326,"hr":150},{"dist":0.64,"sec":240,"pace":375,"hr":143},{"dist":0.73,"sec":240,"pace":329,"hr":149},{"dist":0.66,"sec":240,"pace":364,"hr":151},{"dist":0.73,"sec":240,"pace":327,"hr":153},{"dist":0.66,"sec":240,"pace":364,"hr":156},{"dist":0.76,"sec":240,"pace":315,"hr":162},{"dist":1.14,"sec":448,"pace":392,"hr":156}]},{"id":"fit-474919389756424397","date":"2026-01-24","type":"リカバリー走","distance":6.51,"duration":2594,"pace":398.5,"avgHr":140,"maxHr":156,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":398,"pace":398,"hr":134},{"dist":1.0,"sec":400,"pace":400,"hr":140},{"dist":1.0,"sec":393,"pace":393,"hr":141},{"dist":1.0,"sec":399,"pace":399,"hr":140},{"dist":1.0,"sec":396,"pace":396,"hr":141},{"dist":1.0,"sec":396,"pace":396,"hr":144},{"dist":0.51,"sec":209,"pace":408,"hr":145}]},{"id":"fit-474949877850210410","date":"2026-01-25","type":"ロング走","distance":20.01,"duration":7282,"pace":363.9,"avgHr":149,"maxHr":169,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":367,"pace":367,"hr":134},{"dist":1.0,"sec":366,"pace":366,"hr":140},{"dist":1.0,"sec":360,"pace":360,"hr":144},{"dist":1.0,"sec":360,"pace":360,"hr":145},{"dist":1.0,"sec":360,"pace":360,"hr":145},{"dist":1.0,"sec":359,"pace":359,"hr":145},{"dist":1.0,"sec":362,"pace":362,"hr":145},{"dist":1.0,"sec":361,"pace":361,"hr":147},{"dist":1.0,"sec":364,"pace":364,"hr":147},{"dist":1.0,"sec":364,"pace":364,"hr":147},{"dist":1.0,"sec":360,"pace":360,"hr":148},{"dist":1.0,"sec":363,"pace":363,"hr":147},{"dist":1.0,"sec":364,"pace":364,"hr":152},{"dist":1.0,"sec":365,"pace":365,"hr":151},{"dist":1.0,"sec":360,"pace":360,"hr":150},{"dist":1.0,"sec":376,"pace":376,"hr":141},{"dist":1.0,"sec":352,"pace":352,"hr":160},{"dist":1.0,"sec":348,"pace":348,"hr":162},{"dist":1.0,"sec":344,"pace":344,"hr":163},{"dist":1.0,"sec":413,"pace":413,"hr":159},{"dist":0.01,"sec":4,"pace":423,"hr":151}]},{"id":"fit-474978366099849621","date":"2026-01-26","type":"リカバリー走","distance":12.01,"duration":4777,"pace":397.8,"avgHr":139,"maxHr":173,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":404,"pace":404,"hr":125},{"dist":1.0,"sec":398,"pace":398,"hr":132},{"dist":1.0,"sec":395,"pace":395,"hr":133},{"dist":1.0,"sec":398,"pace":398,"hr":133},{"dist":1.0,"sec":397,"pace":397,"hr":132},{"dist":1.0,"sec":395,"pace":395,"hr":134},{"dist":1.0,"sec":399,"pace":399,"hr":137},{"dist":1.0,"sec":391,"pace":391,"hr":152},{"dist":1.0,"sec":395,"pace":395,"hr":144},{"dist":1.0,"sec":389,"pace":389,"hr":144},{"dist":1.0,"sec":394,"pace":394,"hr":153},{"dist":1.0,"sec":412,"pace":412,"hr":148},{"dist":0.01,"sec":4,"pace":416,"hr":163}]},{"id":"fit-475001494230302827","date":"2026-01-27","type":"ジョグ","distance":12.33,"duration":4607,"pace":373.6,"avgHr":144,"maxHr":167,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":388,"pace":388,"hr":130},{"dist":1.0,"sec":384,"pace":384,"hr":137},{"dist":1.0,"sec":377,"pace":377,"hr":139},{"dist":1.0,"sec":381,"pace":381,"hr":141},{"dist":1.0,"sec":379,"pace":379,"hr":139},{"dist":1.0,"sec":378,"pace":378,"hr":139},{"dist":1.0,"sec":376,"pace":376,"hr":140},{"dist":1.0,"sec":371,"pace":371,"hr":144},{"dist":1.0,"sec":362,"pace":362,"hr":150},{"dist":1.0,"sec":355,"pace":355,"hr":155},{"dist":1.0,"sec":353,"pace":353,"hr":152},{"dist":1.0,"sec":357,"pace":357,"hr":159},{"dist":0.33,"sec":140,"pace":424,"hr":153}]},{"id":"fit-475024368164962306","date":"2026-01-28","type":"ジョグ","distance":10.55,"duration":4096,"pace":388.2,"avgHr":143,"maxHr":166,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":390,"pace":390,"hr":131},{"dist":1.0,"sec":385,"pace":385,"hr":137},{"dist":1.0,"sec":386,"pace":386,"hr":137},{"dist":1.0,"sec":387,"pace":387,"hr":139},{"dist":1.0,"sec":377,"pace":377,"hr":141},{"dist":1.0,"sec":383,"pace":383,"hr":150},{"dist":1.0,"sec":374,"pace":374,"hr":143},{"dist":1.0,"sec":395,"pace":395,"hr":142},{"dist":1.0,"sec":390,"pace":390,"hr":148},{"dist":1.0,"sec":398,"pace":398,"hr":154},{"dist":0.55,"sec":226,"pace":410,"hr":154}]},{"id":"fit-475086014356946945","date":"2026-01-31","type":"ロング走","distance":20.08,"duration":7540,"pace":375.5,"avgHr":147,"maxHr":160,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":378,"pace":378,"hr":133},{"dist":1.0,"sec":370,"pace":370,"hr":143},{"dist":1.0,"sec":371,"pace":371,"hr":144},{"dist":1.0,"sec":376,"pace":376,"hr":143},{"dist":1.0,"sec":375,"pace":375,"hr":143},{"dist":1.0,"sec":383,"pace":383,"hr":144},{"dist":1.0,"sec":386,"pace":386,"hr":147},{"dist":1.0,"sec":374,"pace":374,"hr":145},{"dist":1.0,"sec":373,"pace":373,"hr":147},{"dist":1.0,"sec":376,"pace":376,"hr":147},{"dist":1.0,"sec":370,"pace":370,"hr":147},{"dist":1.0,"sec":376,"pace":376,"hr":146},{"dist":1.0,"sec":369,"pace":369,"hr":149},{"dist":1.0,"sec":370,"pace":370,"hr":150},{"dist":1.0,"sec":374,"pace":374,"hr":149},{"dist":1.0,"sec":379,"pace":379,"hr":152},{"dist":1.0,"sec":378,"pace":378,"hr":149},{"dist":1.0,"sec":383,"pace":383,"hr":149},{"dist":1.0,"sec":367,"pace":367,"hr":152},{"dist":1.0,"sec":369,"pace":369,"hr":152},{"dist":0.08,"sec":34,"pace":417,"hr":157}]},{"id":"fit-475165861030691023","date":"2026-02-03","type":"ジョグ","distance":5.51,"duration":2114,"pace":383.7,"avgHr":137,"maxHr":158,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":396,"pace":396,"hr":141},{"dist":1.0,"sec":390,"pace":390,"hr":138},{"dist":1.0,"sec":381,"pace":381,"hr":133},{"dist":1.0,"sec":389,"pace":389,"hr":129},{"dist":1.0,"sec":348,"pace":348,"hr":142},{"dist":0.51,"sec":208,"pace":405,"hr":140}]},{"id":"fit-475210975891456106","date":"2026-02-05","type":"ジョグ","distance":9.02,"duration":3318,"pace":367.8,"avgHr":144,"maxHr":171,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":2.29,"sec":900,"pace":392,"hr":133},{"dist":0.64,"sec":240,"pace":372,"hr":140},{"dist":0.72,"sec":240,"pace":331,"hr":148},{"dist":0.64,"sec":240,"pace":372,"hr":150},{"dist":0.73,"sec":240,"pace":327,"hr":148},{"dist":0.64,"sec":240,"pace":376,"hr":148},{"dist":0.73,"sec":240,"pace":330,"hr":149},{"dist":0.65,"sec":240,"pace":371,"hr":145},{"dist":0.74,"sec":240,"pace":323,"hr":152},{"dist":1.23,"sec":498,"pace":405,"hr":153}]},{"id":"fit-475276648101478502","date":"2026-02-08","type":"ジョグ","distance":10.54,"duration":3914,"pace":371.3,"avgHr":150,"maxHr":174,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":370,"pace":370,"hr":149},{"dist":1.0,"sec":375,"pace":375,"hr":152},{"dist":1.0,"sec":373,"pace":373,"hr":138},{"dist":1.0,"sec":373,"pace":373,"hr":143},{"dist":1.0,"sec":373,"pace":373,"hr":152},{"dist":1.0,"sec":371,"pace":371,"hr":140},{"dist":1.0,"sec":372,"pace":372,"hr":151},{"dist":1.0,"sec":371,"pace":371,"hr":149},{"dist":1.0,"sec":367,"pace":367,"hr":155},{"dist":1.0,"sec":364,"pace":364,"hr":160},{"dist":0.54,"sec":201,"pace":376,"hr":162}]},{"id":"fit-475346033556095181","date":"2026-02-11","type":"ジョグ","distance":9.34,"duration":3420,"pace":366.2,"avgHr":142,"maxHr":171,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":2.33,"sec":900,"pace":386,"hr":134},{"dist":0.65,"sec":240,"pace":368,"hr":140},{"dist":0.71,"sec":240,"pace":337,"hr":149},{"dist":0.65,"sec":240,"pace":370,"hr":142},{"dist":0.73,"sec":240,"pace":328,"hr":148},{"dist":0.65,"sec":240,"pace":370,"hr":144},{"dist":0.72,"sec":240,"pace":332,"hr":147},{"dist":0.64,"sec":240,"pace":376,"hr":144},{"dist":0.73,"sec":240,"pace":328,"hr":150},{"dist":1.51,"sec":600,"pace":397,"hr":144}]},{"id":"fit-475405739786010724","date":"2026-02-14","type":"ジョグ","distance":6.31,"duration":2285,"pace":362.1,"avgHr":147,"maxHr":166,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":368,"pace":368,"hr":134},{"dist":1.0,"sec":371,"pace":371,"hr":140},{"dist":1.0,"sec":369,"pace":369,"hr":145},{"dist":1.0,"sec":367,"pace":367,"hr":146},{"dist":1.0,"sec":334,"pace":334,"hr":153},{"dist":1.0,"sec":346,"pace":346,"hr":160},{"dist":0.31,"sec":127,"pace":410,"hr":154}]},{"id":"fit-475430657026195563","date":"2026-02-15","type":"リカバリー走","distance":13.82,"duration":5521,"pace":399.5,"avgHr":141,"maxHr":161,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":404,"pace":404,"hr":129},{"dist":1.0,"sec":404,"pace":404,"hr":134},{"dist":1.0,"sec":400,"pace":400,"hr":137},{"dist":1.0,"sec":399,"pace":399,"hr":140},{"dist":1.0,"sec":402,"pace":402,"hr":138},{"dist":1.0,"sec":395,"pace":395,"hr":140},{"dist":1.0,"sec":397,"pace":397,"hr":142},{"dist":1.0,"sec":400,"pace":400,"hr":141},{"dist":1.0,"sec":398,"pace":398,"hr":142},{"dist":1.0,"sec":389,"pace":389,"hr":145},{"dist":1.0,"sec":391,"pace":391,"hr":145},{"dist":1.0,"sec":399,"pace":399,"hr":148},{"dist":1.0,"sec":406,"pace":406,"hr":146},{"dist":0.82,"sec":332,"pace":406,"hr":146}]},{"id":"fit-475511825746657288","date":"2026-02-18","type":"ジョグ","distance":10.01,"duration":3516,"pace":351.2,"avgHr":150,"maxHr":167,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":366,"pace":366,"hr":146},{"dist":1.0,"sec":366,"pace":366,"hr":142},{"dist":1.0,"sec":352,"pace":352,"hr":146},{"dist":1.0,"sec":352,"pace":352,"hr":145},{"dist":1.0,"sec":343,"pace":343,"hr":147},{"dist":1.0,"sec":340,"pace":340,"hr":150},{"dist":1.0,"sec":331,"pace":331,"hr":153},{"dist":1.0,"sec":332,"pace":332,"hr":156},{"dist":1.0,"sec":329,"pace":329,"hr":155},{"dist":1.0,"sec":396,"pace":396,"hr":159},{"dist":0.01,"sec":4,"pace":436,"hr":157}]},{"id":"fit-475569005172654284","date":"2026-02-21","type":"ジョグ","distance":6.62,"duration":2558,"pace":386.4,"avgHr":140,"maxHr":168,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":388,"pace":388,"hr":132},{"dist":1.0,"sec":389,"pace":389,"hr":139},{"dist":1.0,"sec":385,"pace":385,"hr":141},{"dist":1.0,"sec":387,"pace":387,"hr":139},{"dist":1.0,"sec":377,"pace":377,"hr":141},{"dist":1.0,"sec":373,"pace":373,"hr":148},{"dist":0.62,"sec":257,"pace":414,"hr":139}]},{"id":"fit-475597046487744516","date":"2026-02-22","type":"レース","distance":42.83,"duration":17452,"pace":407.5,"avgHr":152,"maxHr":178,"memo":"姫路城マラソン2026（26km以降失速のレース）※種別自動判定","laps":[{"dist":1.0,"sec":450,"pace":450,"hr":123},{"dist":1.0,"sec":352,"pace":352,"hr":149},{"dist":1.0,"sec":345,"pace":345,"hr":153},{"dist":1.0,"sec":347,"pace":347,"hr":152},{"dist":1.0,"sec":356,"pace":356,"hr":154},{"dist":1.0,"sec":344,"pace":344,"hr":155},{"dist":1.0,"sec":341,"pace":341,"hr":159},{"dist":1.0,"sec":345,"pace":345,"hr":160},{"dist":1.0,"sec":346,"pace":346,"hr":160},{"dist":1.0,"sec":349,"pace":349,"hr":161},{"dist":1.0,"sec":349,"pace":349,"hr":161},{"dist":1.0,"sec":346,"pace":346,"hr":161},{"dist":1.0,"sec":347,"pace":347,"hr":161},{"dist":1.0,"sec":352,"pace":352,"hr":164},{"dist":1.0,"sec":345,"pace":345,"hr":163},{"dist":1.0,"sec":350,"pace":350,"hr":164},{"dist":1.0,"sec":348,"pace":348,"hr":165},{"dist":1.0,"sec":343,"pace":343,"hr":166},{"dist":1.0,"sec":334,"pace":334,"hr":168},{"dist":1.0,"sec":341,"pace":341,"hr":168},{"dist":1.0,"sec":340,"pace":340,"hr":167},{"dist":1.0,"sec":340,"pace":340,"hr":168},{"dist":1.0,"sec":339,"pace":339,"hr":167},{"dist":1.0,"sec":348,"pace":348,"hr":168},{"dist":1.0,"sec":353,"pace":353,"hr":167},{"dist":1.0,"sec":380,"pace":380,"hr":162},{"dist":1.0,"sec":488,"pace":488,"hr":141},{"dist":1.0,"sec":460,"pace":460,"hr":149},{"dist":1.0,"sec":563,"pace":563,"hr":134},{"dist":1.0,"sec":610,"pace":610,"hr":126},{"dist":1.0,"sec":604,"pace":604,"hr":128},{"dist":1.0,"sec":484,"pace":484,"hr":145},{"dist":1.0,"sec":571,"pace":571,"hr":135},{"dist":1.0,"sec":511,"pace":511,"hr":143},{"dist":1.0,"sec":530,"pace":530,"hr":138},{"dist":1.0,"sec":514,"pace":514,"hr":143},{"dist":1.0,"sec":508,"pace":508,"hr":140},{"dist":1.0,"sec":549,"pace":549,"hr":139},{"dist":1.0,"sec":507,"pace":507,"hr":143},{"dist":1.0,"sec":373,"pace":373,"hr":164},{"dist":1.0,"sec":410,"pace":410,"hr":158},{"dist":1.0,"sec":338,"pace":338,"hr":167},{"dist":0.83,"sec":283,"pace":340,"hr":171}]},{"id":"fit-475869609138880515","date":"2026-03-06","type":"ジョグ","distance":5.12,"duration":1993,"pace":389.3,"avgHr":138,"maxHr":151,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":386,"pace":386,"hr":133},{"dist":1.0,"sec":389,"pace":389,"hr":136},{"dist":1.0,"sec":389,"pace":389,"hr":139},{"dist":1.0,"sec":390,"pace":390,"hr":140},{"dist":1.0,"sec":390,"pace":390,"hr":140},{"dist":0.12,"sec":46,"pace":402,"hr":145}]},{"id":"fit-475960600424382569","date":"2026-03-10","type":"ジョグ","distance":8.33,"duration":3168,"pace":380.3,"avgHr":143,"maxHr":159,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":387,"pace":387,"hr":138},{"dist":1.0,"sec":387,"pace":387,"hr":137},{"dist":1.0,"sec":379,"pace":379,"hr":141},{"dist":1.0,"sec":375,"pace":375,"hr":141},{"dist":1.0,"sec":376,"pace":376,"hr":142},{"dist":1.0,"sec":379,"pace":379,"hr":145},{"dist":1.0,"sec":377,"pace":377,"hr":148},{"dist":1.0,"sec":367,"pace":367,"hr":149},{"dist":0.33,"sec":137,"pace":415,"hr":153}]},{"id":"fit-476136980506247369","date":"2026-03-17","type":"ジョグ","distance":6.38,"duration":2240,"pace":351.1,"avgHr":151,"maxHr":176,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":365,"pace":365,"hr":137},{"dist":1.0,"sec":357,"pace":357,"hr":148},{"dist":1.0,"sec":350,"pace":350,"hr":151},{"dist":1.0,"sec":347,"pace":347,"hr":151},{"dist":1.0,"sec":329,"pace":329,"hr":158},{"dist":1.0,"sec":345,"pace":345,"hr":162},{"dist":0.38,"sec":144,"pace":381,"hr":155}]},{"id":"fit-476194154852941827","date":"2026-03-20","type":"ジョグ","distance":8.15,"duration":2958,"pace":362.9,"avgHr":150,"maxHr":167,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":376,"pace":376,"hr":141},{"dist":1.0,"sec":363,"pace":363,"hr":150},{"dist":1.0,"sec":371,"pace":371,"hr":152},{"dist":1.0,"sec":363,"pace":363,"hr":153},{"dist":1.0,"sec":361,"pace":361,"hr":150},{"dist":1.0,"sec":362,"pace":362,"hr":148},{"dist":1.0,"sec":361,"pace":361,"hr":150},{"dist":1.0,"sec":341,"pace":341,"hr":159},{"dist":0.15,"sec":58,"pace":382,"hr":160}]},{"id":"fit-476249690378109129","date":"2026-03-22","type":"ジョグ","distance":16.13,"duration":5783,"pace":358.5,"avgHr":154,"maxHr":173,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":362,"pace":362,"hr":132},{"dist":1.0,"sec":356,"pace":356,"hr":144},{"dist":1.0,"sec":356,"pace":356,"hr":147},{"dist":1.0,"sec":369,"pace":369,"hr":148},{"dist":1.0,"sec":355,"pace":355,"hr":145},{"dist":1.0,"sec":353,"pace":353,"hr":154},{"dist":1.0,"sec":353,"pace":353,"hr":155},{"dist":1.0,"sec":353,"pace":353,"hr":159},{"dist":1.0,"sec":357,"pace":357,"hr":157},{"dist":1.0,"sec":356,"pace":356,"hr":157},{"dist":1.0,"sec":358,"pace":358,"hr":159},{"dist":1.0,"sec":367,"pace":367,"hr":160},{"dist":1.0,"sec":365,"pace":365,"hr":157},{"dist":1.0,"sec":355,"pace":355,"hr":159},{"dist":1.0,"sec":354,"pace":354,"hr":162},{"dist":1.0,"sec":355,"pace":355,"hr":163},{"dist":0.13,"sec":53,"pace":401,"hr":169}]},{"id":"fit-476309620743241733","date":"2026-03-25","type":"ジョグ","distance":7.23,"duration":2824,"pace":390.6,"avgHr":146,"maxHr":168,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":395,"pace":395,"hr":144},{"dist":1.0,"sec":394,"pace":394,"hr":139},{"dist":1.0,"sec":382,"pace":382,"hr":156},{"dist":1.0,"sec":388,"pace":388,"hr":153},{"dist":1.0,"sec":385,"pace":385,"hr":142},{"dist":1.0,"sec":392,"pace":392,"hr":143},{"dist":1.0,"sec":390,"pace":390,"hr":146},{"dist":0.23,"sec":95,"pace":415,"hr":148}]},{"id":"fit-476345654981984359","date":"2026-03-26","type":"ジョグ","distance":7.51,"duration":2754,"pace":366.7,"avgHr":143,"maxHr":153,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":370,"pace":370,"hr":130},{"dist":1.0,"sec":368,"pace":368,"hr":141},{"dist":1.0,"sec":362,"pace":362,"hr":145},{"dist":1.0,"sec":362,"pace":362,"hr":145},{"dist":1.0,"sec":363,"pace":363,"hr":145},{"dist":1.0,"sec":365,"pace":365,"hr":147},{"dist":1.0,"sec":365,"pace":365,"hr":146},{"dist":0.51,"sec":195,"pace":381,"hr":147}]},{"id":"fit-476380541132767332","date":"2026-03-28","type":"ジョグ","distance":10.72,"duration":3885,"pace":362.4,"avgHr":148,"maxHr":174,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":387,"pace":387,"hr":132},{"dist":1.0,"sec":370,"pace":370,"hr":143},{"dist":1.0,"sec":361,"pace":361,"hr":148},{"dist":1.0,"sec":361,"pace":361,"hr":146},{"dist":1.0,"sec":364,"pace":364,"hr":146},{"dist":1.0,"sec":358,"pace":358,"hr":148},{"dist":1.0,"sec":358,"pace":358,"hr":151},{"dist":1.0,"sec":355,"pace":355,"hr":152},{"dist":1.0,"sec":357,"pace":357,"hr":152},{"dist":1.0,"sec":323,"pace":323,"hr":162},{"dist":0.72,"sec":286,"pace":395,"hr":152}]},{"id":"fit-476404290422865933","date":"2026-03-29","type":"ロング走","distance":20.69,"duration":8078,"pace":390.4,"avgHr":144,"maxHr":163,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":376,"pace":376,"hr":132},{"dist":1.0,"sec":389,"pace":389,"hr":138},{"dist":1.0,"sec":390,"pace":390,"hr":140},{"dist":1.0,"sec":414,"pace":414,"hr":140},{"dist":1.0,"sec":392,"pace":392,"hr":135},{"dist":1.0,"sec":397,"pace":397,"hr":140},{"dist":1.0,"sec":391,"pace":391,"hr":141},{"dist":1.0,"sec":388,"pace":388,"hr":141},{"dist":1.0,"sec":404,"pace":404,"hr":148},{"dist":1.0,"sec":390,"pace":390,"hr":141},{"dist":1.0,"sec":388,"pace":388,"hr":141},{"dist":1.0,"sec":393,"pace":393,"hr":149},{"dist":1.0,"sec":388,"pace":388,"hr":140},{"dist":1.0,"sec":388,"pace":388,"hr":142},{"dist":1.0,"sec":386,"pace":386,"hr":147},{"dist":1.0,"sec":386,"pace":386,"hr":149},{"dist":1.0,"sec":397,"pace":397,"hr":150},{"dist":1.0,"sec":393,"pace":393,"hr":154},{"dist":1.0,"sec":383,"pace":383,"hr":150},{"dist":1.0,"sec":377,"pace":377,"hr":157},{"dist":0.69,"sec":258,"pace":372,"hr":161}]},{"id":"fit-476438916168187907","date":"2026-03-30","type":"ジョグ","distance":10.56,"duration":3828,"pace":362.5,"avgHr":144,"maxHr":158,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":376,"pace":376,"hr":129},{"dist":1.0,"sec":366,"pace":366,"hr":142},{"dist":1.0,"sec":359,"pace":359,"hr":144},{"dist":1.0,"sec":362,"pace":362,"hr":144},{"dist":1.0,"sec":358,"pace":358,"hr":145},{"dist":1.0,"sec":359,"pace":359,"hr":144},{"dist":1.0,"sec":359,"pace":359,"hr":145},{"dist":1.0,"sec":358,"pace":358,"hr":150},{"dist":1.0,"sec":354,"pace":354,"hr":149},{"dist":1.0,"sec":363,"pace":363,"hr":147},{"dist":0.56,"sec":209,"pace":377,"hr":150}]},{"id":"fit-476471097552830471","date":"2026-04-01","type":"ジョグ","distance":5.32,"duration":1972,"pace":370.7,"avgHr":143,"maxHr":158,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":383,"pace":383,"hr":134},{"dist":1.0,"sec":371,"pace":371,"hr":144},{"dist":1.0,"sec":366,"pace":366,"hr":145},{"dist":1.0,"sec":363,"pace":363,"hr":145},{"dist":1.0,"sec":364,"pace":364,"hr":146},{"dist":0.32,"sec":121,"pace":384,"hr":154}]},{"id":"fit-476507903824527664","date":"2026-04-02","type":"ジョグ","distance":10.11,"duration":3733,"pace":369.2,"avgHr":139,"maxHr":146,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":383,"pace":383,"hr":128},{"dist":1.0,"sec":377,"pace":377,"hr":139},{"dist":1.0,"sec":366,"pace":366,"hr":143},{"dist":1.0,"sec":364,"pace":364,"hr":141},{"dist":1.0,"sec":368,"pace":368,"hr":139},{"dist":1.0,"sec":368,"pace":368,"hr":140},{"dist":1.0,"sec":365,"pace":365,"hr":140},{"dist":1.0,"sec":365,"pace":365,"hr":139},{"dist":1.0,"sec":363,"pace":363,"hr":141},{"dist":1.0,"sec":369,"pace":369,"hr":139},{"dist":0.11,"sec":40,"pace":377,"hr":141}]},{"id":"fit-476542340591288323","date":"2026-04-04","type":"ジョグ","distance":13.71,"duration":5200,"pace":379.3,"avgHr":140,"maxHr":155,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":378,"pace":378,"hr":128},{"dist":1.0,"sec":382,"pace":382,"hr":139},{"dist":1.0,"sec":376,"pace":376,"hr":140},{"dist":1.0,"sec":371,"pace":371,"hr":137},{"dist":1.0,"sec":374,"pace":374,"hr":139},{"dist":1.0,"sec":379,"pace":379,"hr":141},{"dist":1.0,"sec":380,"pace":380,"hr":142},{"dist":1.0,"sec":379,"pace":379,"hr":140},{"dist":1.0,"sec":375,"pace":375,"hr":140},{"dist":1.0,"sec":379,"pace":379,"hr":141},{"dist":1.0,"sec":382,"pace":382,"hr":143},{"dist":1.0,"sec":384,"pace":384,"hr":144},{"dist":1.0,"sec":379,"pace":379,"hr":143},{"dist":0.71,"sec":275,"pace":389,"hr":146}]},{"id":"fit-476569128033878020","date":"2026-04-05","type":"その他","distance":2.94,"duration":1541,"pace":524.1,"avgHr":133,"maxHr":175,"memo":"ASICSランニングラボ測定日（大阪）※自動判定","laps":[{"dist":1.0,"sec":424,"pace":424,"hr":128},{"dist":1.0,"sec":372,"pace":372,"hr":166},{"dist":0.94,"sec":744,"pace":793,"hr":118}]},{"id":"fit-476574361185189890","date":"2026-04-05","type":"その他","distance":2.25,"duration":993,"pace":441.3,"avgHr":160,"maxHr":193,"memo":"ASICSランニングラボ測定日（大阪）※自動判定","laps":[{"dist":1.0,"sec":420,"pace":420,"hr":143},{"dist":1.0,"sec":340,"pace":340,"hr":180},{"dist":0.25,"sec":232,"pace":938,"hr":164}]},{"id":"fit-476623919470641254","date":"2026-04-07","type":"ジョグ","distance":8.21,"duration":2897,"pace":352.9,"avgHr":147,"maxHr":158,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":374,"pace":374,"hr":133},{"dist":1.0,"sec":357,"pace":357,"hr":144},{"dist":1.0,"sec":353,"pace":353,"hr":149},{"dist":1.0,"sec":348,"pace":348,"hr":150},{"dist":1.0,"sec":346,"pace":346,"hr":147},{"dist":1.0,"sec":340,"pace":340,"hr":151},{"dist":1.0,"sec":333,"pace":333,"hr":154},{"dist":1.0,"sec":361,"pace":361,"hr":149},{"dist":0.21,"sec":79,"pace":374,"hr":145}]},{"id":"fit-476646953646588113","date":"2026-04-08","type":"ジョグ","distance":8.53,"duration":3260,"pace":382.2,"avgHr":138,"maxHr":146,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":390,"pace":390,"hr":132},{"dist":1.0,"sec":382,"pace":382,"hr":141},{"dist":1.0,"sec":376,"pace":376,"hr":141},{"dist":1.0,"sec":379,"pace":379,"hr":138},{"dist":1.0,"sec":379,"pace":379,"hr":138},{"dist":1.0,"sec":385,"pace":385,"hr":139},{"dist":1.0,"sec":381,"pace":381,"hr":137},{"dist":1.0,"sec":382,"pace":382,"hr":140},{"dist":0.53,"sec":201,"pace":378,"hr":140}]},{"id":"fit-476705040407494670","date":"2026-04-11","type":"ジョグ","distance":10.51,"duration":4018,"pace":382.3,"avgHr":143,"maxHr":165,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":390,"pace":390,"hr":130},{"dist":1.0,"sec":411,"pace":411,"hr":133},{"dist":1.0,"sec":386,"pace":386,"hr":145},{"dist":1.0,"sec":383,"pace":383,"hr":142},{"dist":1.0,"sec":387,"pace":387,"hr":142},{"dist":1.0,"sec":382,"pace":382,"hr":143},{"dist":1.0,"sec":381,"pace":381,"hr":142},{"dist":1.0,"sec":375,"pace":375,"hr":145},{"dist":1.0,"sec":375,"pace":375,"hr":148},{"dist":1.0,"sec":341,"pace":341,"hr":159},{"dist":0.51,"sec":202,"pace":394,"hr":149}]},{"id":"fit-476729486019166224","date":"2026-04-12","type":"ジョグ","distance":16.3,"duration":5992,"pace":367.6,"avgHr":149,"maxHr":166,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":369,"pace":369,"hr":134},{"dist":1.0,"sec":364,"pace":364,"hr":145},{"dist":1.0,"sec":363,"pace":363,"hr":148},{"dist":1.0,"sec":369,"pace":369,"hr":146},{"dist":1.0,"sec":369,"pace":369,"hr":146},{"dist":1.0,"sec":368,"pace":368,"hr":146},{"dist":1.0,"sec":369,"pace":369,"hr":148},{"dist":1.0,"sec":367,"pace":367,"hr":148},{"dist":1.0,"sec":366,"pace":366,"hr":150},{"dist":1.0,"sec":366,"pace":366,"hr":150},{"dist":1.0,"sec":366,"pace":366,"hr":150},{"dist":1.0,"sec":365,"pace":365,"hr":150},{"dist":1.0,"sec":366,"pace":366,"hr":151},{"dist":1.0,"sec":372,"pace":372,"hr":150},{"dist":1.0,"sec":366,"pace":366,"hr":154},{"dist":1.0,"sec":363,"pace":363,"hr":157},{"dist":0.3,"sec":117,"pace":387,"hr":159}]},{"id":"fit-476831800461656067","date":"2026-04-16","type":"ジョグ","distance":8.53,"duration":2853,"pace":334.5,"avgHr":152,"maxHr":163,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":351,"pace":351,"hr":136},{"dist":1.0,"sec":334,"pace":334,"hr":151},{"dist":1.0,"sec":330,"pace":330,"hr":155},{"dist":1.0,"sec":327,"pace":327,"hr":154},{"dist":1.0,"sec":326,"pace":326,"hr":152},{"dist":1.0,"sec":326,"pace":326,"hr":154},{"dist":1.0,"sec":326,"pace":326,"hr":155},{"dist":1.0,"sec":316,"pace":316,"hr":160},{"dist":0.53,"sec":212,"pace":397,"hr":152}]},{"id":"fit-476866545941774339","date":"2026-04-18","type":"ジョグ","distance":10.03,"duration":3677,"pace":366.6,"avgHr":142,"maxHr":155,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":371,"pace":371,"hr":130},{"dist":1.0,"sec":361,"pace":361,"hr":139},{"dist":1.0,"sec":372,"pace":372,"hr":141},{"dist":1.0,"sec":371,"pace":371,"hr":140},{"dist":1.0,"sec":358,"pace":358,"hr":145},{"dist":1.0,"sec":358,"pace":358,"hr":144},{"dist":1.0,"sec":361,"pace":361,"hr":145},{"dist":1.0,"sec":366,"pace":366,"hr":145},{"dist":1.0,"sec":367,"pace":367,"hr":145},{"dist":1.0,"sec":375,"pace":375,"hr":147},{"dist":0.03,"sec":11,"pace":330,"hr":154}]},{"id":"fit-476892008386953218","date":"2026-04-19","type":"ロング走","distance":20.03,"duration":7364,"pace":367.6,"avgHr":151,"maxHr":165,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":368,"pace":368,"hr":132},{"dist":1.0,"sec":370,"pace":370,"hr":141},{"dist":1.0,"sec":373,"pace":373,"hr":143},{"dist":1.0,"sec":359,"pace":359,"hr":148},{"dist":1.0,"sec":358,"pace":358,"hr":148},{"dist":1.0,"sec":366,"pace":366,"hr":150},{"dist":1.0,"sec":370,"pace":370,"hr":148},{"dist":1.0,"sec":367,"pace":367,"hr":151},{"dist":1.0,"sec":367,"pace":367,"hr":153},{"dist":1.0,"sec":366,"pace":366,"hr":153},{"dist":1.0,"sec":368,"pace":368,"hr":154},{"dist":1.0,"sec":377,"pace":377,"hr":155},{"dist":1.0,"sec":364,"pace":364,"hr":156},{"dist":1.0,"sec":372,"pace":372,"hr":157},{"dist":1.0,"sec":365,"pace":365,"hr":158},{"dist":1.0,"sec":379,"pace":379,"hr":159},{"dist":1.0,"sec":365,"pace":365,"hr":145},{"dist":1.0,"sec":369,"pace":369,"hr":155},{"dist":1.0,"sec":359,"pace":359,"hr":160},{"dist":1.0,"sec":361,"pace":361,"hr":162},{"dist":0.03,"sec":11,"pace":359,"hr":163}]},{"id":"fit-476972277567619280","date":"2026-04-22","type":"ジョグ","distance":8.42,"duration":2792,"pace":331.6,"avgHr":148,"maxHr":160,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":341,"pace":341,"hr":132},{"dist":1.0,"sec":328,"pace":328,"hr":147},{"dist":1.0,"sec":324,"pace":324,"hr":150},{"dist":1.0,"sec":322,"pace":322,"hr":151},{"dist":1.0,"sec":324,"pace":324,"hr":150},{"dist":1.0,"sec":321,"pace":321,"hr":153},{"dist":1.0,"sec":320,"pace":320,"hr":155},{"dist":1.0,"sec":351,"pace":351,"hr":151},{"dist":0.42,"sec":157,"pace":371,"hr":145}]},{"id":"fit-477029741264666631","date":"2026-04-25","type":"ジョグ","distance":10.24,"duration":3754,"pace":366.6,"avgHr":142,"maxHr":159,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":370,"pace":370,"hr":127},{"dist":1.0,"sec":371,"pace":371,"hr":137},{"dist":1.0,"sec":364,"pace":364,"hr":139},{"dist":1.0,"sec":366,"pace":366,"hr":140},{"dist":1.0,"sec":363,"pace":363,"hr":140},{"dist":1.0,"sec":361,"pace":361,"hr":142},{"dist":1.0,"sec":365,"pace":365,"hr":145},{"dist":1.0,"sec":366,"pace":366,"hr":146},{"dist":1.0,"sec":364,"pace":364,"hr":147},{"dist":1.0,"sec":367,"pace":367,"hr":148},{"dist":0.24,"sec":92,"pace":386,"hr":153}]},{"id":"fit-477053277148577796","date":"2026-04-26","type":"ロング走","distance":20.01,"duration":7369,"pace":368.3,"avgHr":148,"maxHr":166,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":369,"pace":369,"hr":127},{"dist":1.0,"sec":371,"pace":371,"hr":135},{"dist":1.0,"sec":369,"pace":369,"hr":141},{"dist":1.0,"sec":364,"pace":364,"hr":143},{"dist":1.0,"sec":359,"pace":359,"hr":144},{"dist":1.0,"sec":370,"pace":370,"hr":144},{"dist":1.0,"sec":367,"pace":367,"hr":147},{"dist":1.0,"sec":364,"pace":364,"hr":148},{"dist":1.0,"sec":366,"pace":366,"hr":149},{"dist":1.0,"sec":365,"pace":365,"hr":148},{"dist":1.0,"sec":371,"pace":371,"hr":151},{"dist":1.0,"sec":370,"pace":370,"hr":152},{"dist":1.0,"sec":365,"pace":365,"hr":151},{"dist":1.0,"sec":368,"pace":368,"hr":149},{"dist":1.0,"sec":369,"pace":369,"hr":155},{"dist":1.0,"sec":370,"pace":370,"hr":155},{"dist":1.0,"sec":382,"pace":382,"hr":156},{"dist":1.0,"sec":375,"pace":375,"hr":155},{"dist":1.0,"sec":369,"pace":369,"hr":151},{"dist":1.0,"sec":354,"pace":354,"hr":163}]},{"id":"fit-477122063199404035","date":"2026-04-29","type":"ジョグ","distance":8.67,"duration":2824,"pace":325.7,"avgHr":158,"maxHr":167,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":334,"pace":334,"hr":140},{"dist":1.0,"sec":324,"pace":324,"hr":154},{"dist":1.0,"sec":314,"pace":314,"hr":160},{"dist":1.0,"sec":312,"pace":312,"hr":161},{"dist":1.0,"sec":314,"pace":314,"hr":162},{"dist":1.0,"sec":314,"pace":314,"hr":163},{"dist":1.0,"sec":317,"pace":317,"hr":164},{"dist":1.0,"sec":315,"pace":315,"hr":165},{"dist":0.67,"sec":274,"pace":412,"hr":152}]},{"id":"fit-477191305598894084","date":"2026-05-02","type":"ジョグ","distance":8.2,"duration":2659,"pace":324.3,"avgHr":160,"maxHr":174,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":332,"pace":332,"hr":142},{"dist":1.0,"sec":326,"pace":326,"hr":159},{"dist":1.0,"sec":324,"pace":324,"hr":160},{"dist":1.0,"sec":326,"pace":326,"hr":161},{"dist":1.0,"sec":316,"pace":316,"hr":163},{"dist":1.0,"sec":311,"pace":311,"hr":164},{"dist":1.0,"sec":304,"pace":304,"hr":169},{"dist":1.0,"sec":340,"pace":340,"hr":165},{"dist":0.2,"sec":75,"pace":377,"hr":151}]},{"id":"fit-477237092097753191","date":"2026-05-04","type":"ジョグ","distance":8.21,"duration":2794,"pace":340.3,"avgHr":153,"maxHr":167,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":353,"pace":353,"hr":137},{"dist":1.0,"sec":343,"pace":343,"hr":147},{"dist":1.0,"sec":330,"pace":330,"hr":154},{"dist":1.0,"sec":320,"pace":320,"hr":157},{"dist":1.0,"sec":331,"pace":331,"hr":159},{"dist":1.0,"sec":332,"pace":332,"hr":158},{"dist":1.0,"sec":319,"pace":319,"hr":162},{"dist":1.0,"sec":376,"pace":376,"hr":154},{"dist":0.21,"sec":84,"pace":396,"hr":156}]},{"id":"fit-477318987191976247","date":"2026-05-07","type":"ジョグ","distance":8.55,"duration":2884,"pace":337.3,"avgHr":153,"maxHr":169,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":341,"pace":341,"hr":133},{"dist":1.0,"sec":333,"pace":333,"hr":149},{"dist":1.0,"sec":318,"pace":318,"hr":157},{"dist":1.0,"sec":320,"pace":320,"hr":156},{"dist":1.0,"sec":314,"pace":314,"hr":159},{"dist":1.0,"sec":312,"pace":312,"hr":161},{"dist":1.0,"sec":296,"pace":296,"hr":167},{"dist":1.0,"sec":408,"pace":408,"hr":148},{"dist":0.55,"sec":237,"pace":432,"hr":146}]},{"id":"fit-477354990816493571","date":"2026-05-09","type":"ジョグ","distance":11.01,"duration":4170,"pace":378.7,"avgHr":143,"maxHr":164,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":385,"pace":385,"hr":130},{"dist":1.0,"sec":398,"pace":398,"hr":137},{"dist":1.0,"sec":385,"pace":385,"hr":140},{"dist":1.0,"sec":385,"pace":385,"hr":139},{"dist":1.0,"sec":381,"pace":381,"hr":142},{"dist":1.0,"sec":378,"pace":378,"hr":145},{"dist":1.0,"sec":376,"pace":376,"hr":142},{"dist":1.0,"sec":375,"pace":375,"hr":144},{"dist":1.0,"sec":376,"pace":376,"hr":146},{"dist":1.0,"sec":364,"pace":364,"hr":147},{"dist":1.0,"sec":357,"pace":357,"hr":156},{"dist":0.01,"sec":4,"pace":360,"hr":162}]},{"id":"fit-477377826364883051","date":"2026-05-10","type":"ロング走","distance":20.16,"duration":7455,"pace":369.8,"avgHr":150,"maxHr":164,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":370,"pace":370,"hr":129},{"dist":1.0,"sec":374,"pace":374,"hr":137},{"dist":1.0,"sec":376,"pace":376,"hr":142},{"dist":1.0,"sec":382,"pace":382,"hr":141},{"dist":1.0,"sec":374,"pace":374,"hr":144},{"dist":1.0,"sec":374,"pace":374,"hr":145},{"dist":1.0,"sec":375,"pace":375,"hr":147},{"dist":1.0,"sec":370,"pace":370,"hr":147},{"dist":1.0,"sec":360,"pace":360,"hr":152},{"dist":1.0,"sec":369,"pace":369,"hr":156},{"dist":1.0,"sec":370,"pace":370,"hr":151},{"dist":1.0,"sec":365,"pace":365,"hr":151},{"dist":1.0,"sec":360,"pace":360,"hr":156},{"dist":1.0,"sec":365,"pace":365,"hr":155},{"dist":1.0,"sec":364,"pace":364,"hr":154},{"dist":1.0,"sec":367,"pace":367,"hr":154},{"dist":1.0,"sec":361,"pace":361,"hr":156},{"dist":1.0,"sec":373,"pace":373,"hr":158},{"dist":1.0,"sec":370,"pace":370,"hr":158},{"dist":1.0,"sec":371,"pace":371,"hr":161},{"dist":0.16,"sec":55,"pace":342,"hr":160}]},{"id":"fit-477445212778561737","date":"2026-05-13","type":"ジョグ","distance":5.62,"duration":1876,"pace":333.8,"avgHr":151,"maxHr":167,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":349,"pace":349,"hr":132},{"dist":1.0,"sec":339,"pace":339,"hr":144},{"dist":1.0,"sec":325,"pace":325,"hr":154},{"dist":1.0,"sec":311,"pace":311,"hr":161},{"dist":1.0,"sec":304,"pace":304,"hr":166},{"dist":0.62,"sec":245,"pace":397,"hr":154}]},{"id":"fit-477491545545670657","date":"2026-05-15","type":"ジョグ","distance":6.03,"duration":2171,"pace":360.0,"avgHr":142,"maxHr":165,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":370,"pace":370,"hr":127},{"dist":1.0,"sec":367,"pace":367,"hr":139},{"dist":1.0,"sec":360,"pace":360,"hr":142},{"dist":1.0,"sec":356,"pace":356,"hr":143},{"dist":1.0,"sec":318,"pace":318,"hr":155},{"dist":1.0,"sec":382,"pace":382,"hr":150},{"dist":0.03,"sec":13,"pace":398,"hr":152}]},{"id":"fit-477517278571692137","date":"2026-05-16","type":"ロング走","distance":20.02,"duration":7256,"pace":362.4,"avgHr":159,"maxHr":177,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":359,"pace":359,"hr":135},{"dist":1.0,"sec":362,"pace":362,"hr":148},{"dist":1.0,"sec":361,"pace":361,"hr":148},{"dist":1.0,"sec":370,"pace":370,"hr":146},{"dist":1.0,"sec":363,"pace":363,"hr":149},{"dist":1.0,"sec":362,"pace":362,"hr":153},{"dist":1.0,"sec":365,"pace":365,"hr":155},{"dist":1.0,"sec":366,"pace":366,"hr":154},{"dist":1.0,"sec":365,"pace":365,"hr":155},{"dist":1.0,"sec":361,"pace":361,"hr":157},{"dist":1.0,"sec":372,"pace":372,"hr":162},{"dist":1.0,"sec":367,"pace":367,"hr":164},{"dist":1.0,"sec":356,"pace":356,"hr":166},{"dist":1.0,"sec":367,"pace":367,"hr":165},{"dist":1.0,"sec":361,"pace":361,"hr":168},{"dist":1.0,"sec":353,"pace":353,"hr":169},{"dist":1.0,"sec":360,"pace":360,"hr":169},{"dist":1.0,"sec":360,"pace":360,"hr":169},{"dist":1.0,"sec":350,"pace":350,"hr":169},{"dist":1.0,"sec":359,"pace":359,"hr":171},{"dist":0.02,"sec":7,"pace":363,"hr":173}]},{"id":"fit-477538920375025765","date":"2026-05-17","type":"リカバリー走","distance":5.25,"duration":2086,"pace":397.3,"avgHr":136,"maxHr":145,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":400,"pace":400,"hr":128},{"dist":1.0,"sec":392,"pace":392,"hr":136},{"dist":1.0,"sec":395,"pace":395,"hr":139},{"dist":1.0,"sec":394,"pace":394,"hr":138},{"dist":1.0,"sec":405,"pace":405,"hr":140},{"dist":0.25,"sec":98,"pace":400,"hr":135}]},{"id":"fit-477584300999475303","date":"2026-05-19","type":"ジョグ","distance":5.82,"duration":1942,"pace":333.7,"avgHr":153,"maxHr":170,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":346,"pace":346,"hr":133},{"dist":1.0,"sec":332,"pace":332,"hr":148},{"dist":1.0,"sec":322,"pace":322,"hr":157},{"dist":1.0,"sec":311,"pace":311,"hr":161},{"dist":1.0,"sec":298,"pace":298,"hr":168},{"dist":0.82,"sec":330,"pace":403,"hr":152}]},{"id":"fit-477701797077614594","date":"2026-05-24","type":"ジョグ","distance":14.05,"duration":5088,"pace":362.1,"avgHr":143,"maxHr":155,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":367,"pace":367,"hr":127},{"dist":1.0,"sec":358,"pace":358,"hr":136},{"dist":1.0,"sec":361,"pace":361,"hr":139},{"dist":1.0,"sec":365,"pace":365,"hr":139},{"dist":1.0,"sec":362,"pace":362,"hr":143},{"dist":1.0,"sec":358,"pace":358,"hr":145},{"dist":1.0,"sec":362,"pace":362,"hr":145},{"dist":1.0,"sec":361,"pace":361,"hr":147},{"dist":1.0,"sec":363,"pace":363,"hr":139},{"dist":1.0,"sec":363,"pace":363,"hr":146},{"dist":1.0,"sec":366,"pace":366,"hr":151},{"dist":1.0,"sec":361,"pace":361,"hr":145},{"dist":1.0,"sec":359,"pace":359,"hr":148},{"dist":1.0,"sec":357,"pace":357,"hr":153},{"dist":0.05,"sec":18,"pace":378,"hr":154}]},{"id":"fit-477746530504179718","date":"2026-05-26","type":"ジョグ","distance":6.38,"duration":2100,"pace":329.2,"avgHr":157,"maxHr":174,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":348,"pace":348,"hr":136},{"dist":1.0,"sec":338,"pace":338,"hr":150},{"dist":1.0,"sec":330,"pace":330,"hr":158},{"dist":1.0,"sec":321,"pace":321,"hr":162},{"dist":1.0,"sec":314,"pace":314,"hr":165},{"dist":1.0,"sec":305,"pace":305,"hr":172},{"dist":0.38,"sec":142,"pace":378,"hr":163}]},{"id":"fit-477806207466242052","date":"2026-05-28","type":"ジョグ","distance":6.01,"duration":2273,"pace":378.2,"avgHr":139,"maxHr":151,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":376,"pace":376,"hr":129},{"dist":1.0,"sec":375,"pace":375,"hr":138},{"dist":1.0,"sec":368,"pace":368,"hr":141},{"dist":1.0,"sec":367,"pace":367,"hr":140},{"dist":1.0,"sec":374,"pace":374,"hr":141},{"dist":1.0,"sec":406,"pace":406,"hr":145}]},{"id":"fit-477841918777131107","date":"2026-05-30","type":"ロング走","distance":20.96,"duration":7868,"pace":375.4,"avgHr":149,"maxHr":169,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":370,"pace":370,"hr":130},{"dist":1.0,"sec":380,"pace":380,"hr":140},{"dist":1.0,"sec":383,"pace":383,"hr":141},{"dist":1.0,"sec":382,"pace":382,"hr":140},{"dist":1.0,"sec":375,"pace":375,"hr":139},{"dist":1.0,"sec":375,"pace":375,"hr":144},{"dist":1.0,"sec":365,"pace":365,"hr":147},{"dist":1.0,"sec":371,"pace":371,"hr":148},{"dist":1.0,"sec":366,"pace":366,"hr":148},{"dist":1.0,"sec":372,"pace":372,"hr":149},{"dist":1.0,"sec":363,"pace":363,"hr":152},{"dist":1.0,"sec":366,"pace":366,"hr":151},{"dist":1.0,"sec":371,"pace":371,"hr":152},{"dist":1.0,"sec":384,"pace":384,"hr":153},{"dist":1.0,"sec":374,"pace":374,"hr":153},{"dist":1.0,"sec":378,"pace":378,"hr":153},{"dist":1.0,"sec":384,"pace":384,"hr":156},{"dist":1.0,"sec":385,"pace":385,"hr":156},{"dist":1.0,"sec":375,"pace":375,"hr":160},{"dist":1.0,"sec":379,"pace":379,"hr":160},{"dist":0.96,"sec":358,"pace":374,"hr":164}]},{"id":"fit-477863487039635462","date":"2026-05-31","type":"リカバリー走","distance":5.63,"duration":2365,"pace":420.1,"avgHr":136,"maxHr":145,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":420,"pace":420,"hr":129},{"dist":1.0,"sec":417,"pace":417,"hr":134},{"dist":1.0,"sec":420,"pace":420,"hr":136},{"dist":1.0,"sec":420,"pace":420,"hr":137},{"dist":1.0,"sec":416,"pace":416,"hr":139},{"dist":0.63,"sec":270,"pace":431,"hr":142}]},{"id":"fit-478004732665823534","date":"2026-06-06","type":"ロング走","distance":22.04,"duration":8329,"pace":377.9,"avgHr":152,"maxHr":172,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":390,"pace":390,"hr":126},{"dist":1.0,"sec":391,"pace":391,"hr":138},{"dist":1.0,"sec":377,"pace":377,"hr":141},{"dist":1.0,"sec":379,"pace":379,"hr":140},{"dist":1.0,"sec":373,"pace":373,"hr":143},{"dist":1.0,"sec":367,"pace":367,"hr":147},{"dist":1.0,"sec":373,"pace":373,"hr":148},{"dist":1.0,"sec":375,"pace":375,"hr":149},{"dist":1.0,"sec":368,"pace":368,"hr":151},{"dist":1.0,"sec":370,"pace":370,"hr":152},{"dist":1.0,"sec":377,"pace":377,"hr":154},{"dist":1.0,"sec":370,"pace":370,"hr":155},{"dist":1.0,"sec":384,"pace":384,"hr":157},{"dist":1.0,"sec":386,"pace":386,"hr":157},{"dist":1.0,"sec":386,"pace":386,"hr":157},{"dist":1.0,"sec":379,"pace":379,"hr":158},{"dist":1.0,"sec":386,"pace":386,"hr":161},{"dist":1.0,"sec":386,"pace":386,"hr":154},{"dist":1.0,"sec":364,"pace":364,"hr":163},{"dist":1.0,"sec":373,"pace":373,"hr":159},{"dist":1.0,"sec":368,"pace":368,"hr":164},{"dist":1.0,"sec":382,"pace":382,"hr":168},{"dist":0.04,"sec":15,"pace":431,"hr":170}]},{"id":"fit-478025309583605962","date":"2026-06-07","type":"リカバリー走","distance":2.03,"duration":835,"pace":411.3,"avgHr":131,"maxHr":146,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":417,"pace":417,"hr":126},{"dist":1.0,"sec":404,"pace":404,"hr":135},{"dist":0.03,"sec":12,"pace":398,"hr":136}]},{"id":"fit-478071601548525674","date":"2026-06-09","type":"ジョグ","distance":8.03,"duration":2675,"pace":333.1,"avgHr":158,"maxHr":174,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":354,"pace":354,"hr":137},{"dist":1.0,"sec":347,"pace":347,"hr":149},{"dist":1.0,"sec":330,"pace":330,"hr":156},{"dist":1.0,"sec":322,"pace":322,"hr":160},{"dist":1.0,"sec":312,"pace":312,"hr":165},{"dist":1.0,"sec":306,"pace":306,"hr":171},{"dist":1.0,"sec":303,"pace":303,"hr":172},{"dist":1.0,"sec":382,"pace":382,"hr":155},{"dist":0.03,"sec":15,"pace":498,"hr":150}]},{"id":"fit-478131604657569898","date":"2026-06-11","type":"ジョグ","distance":10.32,"duration":3722,"pace":360.7,"avgHr":147,"maxHr":170,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":370,"pace":370,"hr":133},{"dist":1.0,"sec":367,"pace":367,"hr":145},{"dist":1.0,"sec":361,"pace":361,"hr":146},{"dist":1.0,"sec":359,"pace":359,"hr":145},{"dist":1.0,"sec":365,"pace":365,"hr":145},{"dist":1.0,"sec":361,"pace":361,"hr":146},{"dist":1.0,"sec":358,"pace":358,"hr":150},{"dist":1.0,"sec":357,"pace":357,"hr":149},{"dist":1.0,"sec":358,"pace":358,"hr":151},{"dist":1.0,"sec":336,"pace":336,"hr":160},{"dist":0.32,"sec":126,"pace":398,"hr":149}]},{"id":"fit-478167868150677707","date":"2026-06-13","type":"ロング走","distance":20.03,"duration":7693,"pace":384.1,"avgHr":152,"maxHr":176,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":376,"pace":376,"hr":128},{"dist":1.0,"sec":378,"pace":378,"hr":139},{"dist":1.0,"sec":377,"pace":377,"hr":142},{"dist":1.0,"sec":387,"pace":387,"hr":143},{"dist":1.0,"sec":374,"pace":374,"hr":144},{"dist":1.0,"sec":373,"pace":373,"hr":148},{"dist":1.0,"sec":374,"pace":374,"hr":150},{"dist":1.0,"sec":381,"pace":381,"hr":151},{"dist":1.0,"sec":373,"pace":373,"hr":151},{"dist":1.0,"sec":382,"pace":382,"hr":151},{"dist":1.0,"sec":387,"pace":387,"hr":151},{"dist":1.0,"sec":390,"pace":390,"hr":154},{"dist":1.0,"sec":383,"pace":383,"hr":154},{"dist":1.0,"sec":392,"pace":392,"hr":156},{"dist":1.0,"sec":399,"pace":399,"hr":155},{"dist":1.0,"sec":390,"pace":390,"hr":158},{"dist":1.0,"sec":401,"pace":401,"hr":161},{"dist":1.0,"sec":385,"pace":385,"hr":164},{"dist":1.0,"sec":379,"pace":379,"hr":168},{"dist":1.0,"sec":390,"pace":390,"hr":168},{"dist":0.03,"sec":12,"pace":407,"hr":175}]},{"id":"fit-478198377987735557","date":"2026-06-14","type":"リカバリー走","distance":5.06,"duration":2271,"pace":448.8,"avgHr":133,"maxHr":144,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":431,"pace":431,"hr":131},{"dist":1.0,"sec":440,"pace":440,"hr":134},{"dist":1.0,"sec":453,"pace":453,"hr":133},{"dist":1.0,"sec":447,"pace":447,"hr":134},{"dist":1.0,"sec":468,"pace":468,"hr":135},{"dist":0.06,"sec":30,"pace":505,"hr":133}]},{"id":"fit-478246440271905076","date":"2026-06-16","type":"ジョグ","distance":8.02,"duration":2673,"pace":333.3,"avgHr":154,"maxHr":172,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":356,"pace":356,"hr":132},{"dist":1.0,"sec":346,"pace":346,"hr":146},{"dist":1.0,"sec":332,"pace":332,"hr":154},{"dist":1.0,"sec":321,"pace":321,"hr":157},{"dist":1.0,"sec":316,"pace":316,"hr":161},{"dist":1.0,"sec":305,"pace":305,"hr":167},{"dist":1.0,"sec":297,"pace":297,"hr":170},{"dist":1.0,"sec":389,"pace":389,"hr":154},{"dist":0.02,"sec":6,"pace":405,"hr":147}]},{"id":"fit-478294284594872324","date":"2026-06-18","type":"ジョグ","distance":10.41,"duration":3950,"pace":379.4,"avgHr":142,"maxHr":170,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":390,"pace":390,"hr":127},{"dist":1.0,"sec":386,"pace":386,"hr":136},{"dist":1.0,"sec":384,"pace":384,"hr":137},{"dist":1.0,"sec":379,"pace":379,"hr":139},{"dist":1.0,"sec":382,"pace":382,"hr":140},{"dist":1.0,"sec":381,"pace":381,"hr":141},{"dist":1.0,"sec":382,"pace":382,"hr":143},{"dist":1.0,"sec":381,"pace":381,"hr":144},{"dist":1.0,"sec":381,"pace":381,"hr":148},{"dist":1.0,"sec":333,"pace":333,"hr":159},{"dist":0.41,"sec":166,"pace":406,"hr":155}]},{"id":"fit-478353129675456617","date":"2026-06-21","type":"ロング走","distance":25.02,"duration":10031,"pace":400.9,"avgHr":153,"maxHr":172,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":375,"pace":375,"hr":127},{"dist":1.0,"sec":386,"pace":386,"hr":138},{"dist":1.0,"sec":386,"pace":386,"hr":142},{"dist":1.0,"sec":387,"pace":387,"hr":144},{"dist":1.0,"sec":389,"pace":389,"hr":149},{"dist":1.0,"sec":387,"pace":387,"hr":151},{"dist":1.0,"sec":395,"pace":395,"hr":152},{"dist":1.0,"sec":399,"pace":399,"hr":151},{"dist":1.0,"sec":398,"pace":398,"hr":153},{"dist":1.0,"sec":399,"pace":399,"hr":152},{"dist":1.0,"sec":404,"pace":404,"hr":155},{"dist":1.0,"sec":411,"pace":411,"hr":156},{"dist":1.0,"sec":417,"pace":417,"hr":156},{"dist":1.0,"sec":405,"pace":405,"hr":159},{"dist":1.0,"sec":411,"pace":411,"hr":158},{"dist":1.0,"sec":415,"pace":415,"hr":156},{"dist":1.0,"sec":401,"pace":401,"hr":151},{"dist":1.0,"sec":396,"pace":396,"hr":156},{"dist":1.0,"sec":404,"pace":404,"hr":159},{"dist":1.0,"sec":396,"pace":396,"hr":160},{"dist":1.0,"sec":401,"pace":401,"hr":153},{"dist":1.0,"sec":425,"pace":425,"hr":156},{"dist":1.0,"sec":422,"pace":422,"hr":158},{"dist":1.0,"sec":405,"pace":405,"hr":165},{"dist":1.0,"sec":398,"pace":398,"hr":167},{"dist":0.02,"sec":6,"pace":394,"hr":169}]},{"id":"fit-478409757755998215","date":"2026-06-23","type":"ジョグ","distance":10.07,"duration":3522,"pace":349.8,"avgHr":148,"maxHr":163,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":377,"pace":377,"hr":128},{"dist":1.0,"sec":382,"pace":382,"hr":136},{"dist":1.0,"sec":337,"pace":337,"hr":150},{"dist":1.0,"sec":334,"pace":334,"hr":153},{"dist":1.0,"sec":334,"pace":334,"hr":150},{"dist":1.0,"sec":330,"pace":330,"hr":153},{"dist":1.0,"sec":331,"pace":331,"hr":155},{"dist":1.0,"sec":328,"pace":328,"hr":157},{"dist":1.0,"sec":328,"pace":328,"hr":161},{"dist":1.0,"sec":404,"pace":404,"hr":145},{"dist":0.07,"sec":31,"pace":423,"hr":139}]},{"id":"fit-478495882046636133","date":"2026-06-27","type":"ジョグ","distance":10.22,"duration":3925,"pace":384.1,"avgHr":143,"maxHr":175,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":392,"pace":392,"hr":127},{"dist":1.0,"sec":393,"pace":393,"hr":136},{"dist":1.0,"sec":388,"pace":388,"hr":137},{"dist":1.0,"sec":386,"pace":386,"hr":141},{"dist":1.0,"sec":385,"pace":385,"hr":143},{"dist":1.0,"sec":385,"pace":385,"hr":144},{"dist":1.0,"sec":379,"pace":379,"hr":147},{"dist":1.0,"sec":392,"pace":392,"hr":144},{"dist":1.0,"sec":387,"pace":387,"hr":148},{"dist":1.0,"sec":345,"pace":345,"hr":161},{"dist":0.22,"sec":88,"pace":399,"hr":156}]},{"id":"fit-478514335644156008","date":"2026-06-28","type":"ロング走","distance":20.09,"duration":7826,"pace":389.5,"avgHr":144,"maxHr":158,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":403,"pace":403,"hr":120},{"dist":1.0,"sec":392,"pace":392,"hr":130},{"dist":1.0,"sec":384,"pace":384,"hr":134},{"dist":1.0,"sec":391,"pace":391,"hr":135},{"dist":1.0,"sec":387,"pace":387,"hr":138},{"dist":1.0,"sec":380,"pace":380,"hr":139},{"dist":1.0,"sec":385,"pace":385,"hr":143},{"dist":1.0,"sec":386,"pace":386,"hr":146},{"dist":1.0,"sec":389,"pace":389,"hr":139},{"dist":1.0,"sec":384,"pace":384,"hr":145},{"dist":1.0,"sec":394,"pace":394,"hr":149},{"dist":1.0,"sec":394,"pace":394,"hr":150},{"dist":1.0,"sec":389,"pace":389,"hr":152},{"dist":1.0,"sec":389,"pace":389,"hr":152},{"dist":1.0,"sec":391,"pace":391,"hr":153},{"dist":1.0,"sec":386,"pace":386,"hr":146},{"dist":1.0,"sec":385,"pace":385,"hr":153},{"dist":1.0,"sec":388,"pace":388,"hr":153},{"dist":1.0,"sec":396,"pace":396,"hr":151},{"dist":1.0,"sec":391,"pace":391,"hr":155},{"dist":0.09,"sec":33,"pace":394,"hr":157}]},{"id":"fit-478572333802487808","date":"2026-06-30","type":"ジョグ","distance":11.12,"duration":3897,"pace":350.4,"avgHr":152,"maxHr":167,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":389,"pace":389,"hr":125},{"dist":1.0,"sec":374,"pace":374,"hr":138},{"dist":1.0,"sec":340,"pace":340,"hr":148},{"dist":1.0,"sec":340,"pace":340,"hr":149},{"dist":1.0,"sec":336,"pace":336,"hr":152},{"dist":1.0,"sec":333,"pace":333,"hr":157},{"dist":1.0,"sec":332,"pace":332,"hr":158},{"dist":1.0,"sec":332,"pace":332,"hr":160},{"dist":1.0,"sec":335,"pace":335,"hr":164},{"dist":1.0,"sec":337,"pace":337,"hr":166},{"dist":1.0,"sec":397,"pace":397,"hr":155},{"dist":0.12,"sec":46,"pace":400,"hr":154}]},{"id":"fit-478619177404366849","date":"2026-07-02","type":"ジョグ","distance":11.02,"duration":4173,"pace":378.7,"avgHr":139,"maxHr":167,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":387,"pace":387,"hr":124},{"dist":1.0,"sec":387,"pace":387,"hr":132},{"dist":1.0,"sec":383,"pace":383,"hr":138},{"dist":1.0,"sec":381,"pace":381,"hr":137},{"dist":1.0,"sec":382,"pace":382,"hr":138},{"dist":1.0,"sec":381,"pace":381,"hr":140},{"dist":1.0,"sec":382,"pace":382,"hr":141},{"dist":1.0,"sec":378,"pace":378,"hr":143},{"dist":1.0,"sec":377,"pace":377,"hr":142},{"dist":1.0,"sec":328,"pace":328,"hr":156},{"dist":1.0,"sec":392,"pace":392,"hr":145},{"dist":0.02,"sec":9,"pace":524,"hr":142}]},{"id":"fit-478654023543586922","date":"2026-07-04","type":"ロング走","distance":28.07,"duration":11349,"pace":404.3,"avgHr":152,"maxHr":168,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":410,"pace":410,"hr":125},{"dist":1.0,"sec":418,"pace":418,"hr":133},{"dist":1.0,"sec":410,"pace":410,"hr":135},{"dist":1.0,"sec":405,"pace":405,"hr":138},{"dist":1.0,"sec":401,"pace":401,"hr":139},{"dist":1.0,"sec":403,"pace":403,"hr":141},{"dist":1.0,"sec":411,"pace":411,"hr":142},{"dist":1.0,"sec":405,"pace":405,"hr":145},{"dist":1.0,"sec":397,"pace":397,"hr":147},{"dist":1.0,"sec":409,"pace":409,"hr":149},{"dist":1.0,"sec":403,"pace":403,"hr":149},{"dist":1.0,"sec":396,"pace":396,"hr":152},{"dist":1.0,"sec":400,"pace":400,"hr":152},{"dist":1.0,"sec":399,"pace":399,"hr":153},{"dist":1.0,"sec":402,"pace":402,"hr":155},{"dist":1.0,"sec":404,"pace":404,"hr":157},{"dist":1.0,"sec":396,"pace":396,"hr":158},{"dist":1.0,"sec":409,"pace":409,"hr":159},{"dist":1.0,"sec":397,"pace":397,"hr":163},{"dist":1.0,"sec":401,"pace":401,"hr":164},{"dist":1.0,"sec":402,"pace":402,"hr":155},{"dist":1.0,"sec":399,"pace":399,"hr":159},{"dist":1.0,"sec":401,"pace":401,"hr":161},{"dist":1.0,"sec":413,"pace":413,"hr":161},{"dist":1.0,"sec":412,"pace":412,"hr":163},{"dist":1.0,"sec":404,"pace":404,"hr":165},{"dist":1.0,"sec":400,"pace":400,"hr":160},{"dist":1.0,"sec":403,"pace":403,"hr":166},{"dist":0.07,"sec":26,"pace":396,"hr":168}]},{"id":"fit-478675814334890092","date":"2026-07-05","type":"リカバリー走","distance":5.31,"duration":2281,"pace":429.6,"avgHr":131,"maxHr":137,"memo":"COROSエクスポートから取込（種別は推定）","laps":[{"dist":1.0,"sec":416,"pace":416,"hr":126},{"dist":1.0,"sec":427,"pace":427,"hr":131},{"dist":1.0,"sec":434,"pace":434,"hr":134},{"dist":1.0,"sec":434,"pace":434,"hr":132},{"dist":1.0,"sec":431,"pace":431,"hr":132},{"dist":0.31,"sec":137,"pace":441,"hr":135}]}];
+
+// 取込データを既存記録にマージ（メモ・種別は既存を優先、数値・ラップを更新）
+function mergeImport(base) {
+  let changed = false;
+  const next = [...base];
+  for (const imp of FIT_IMPORT) {
+    const byId = next.findIndex((r) => r.id === imp.id);
+    if (byId >= 0) {
+      const cur = next[byId];
+      if (cur.distance !== imp.distance || cur.duration !== imp.duration || cur.avgHr !== imp.avgHr || cur.maxHr !== imp.maxHr) {
+        next[byId] = { ...cur, distance: imp.distance, duration: imp.duration, pace: imp.pace, avgHr: imp.avgHr, maxHr: imp.maxHr, laps: imp.laps };
+        changed = true;
+      }
+      continue;
+    }
+    const byDate = next.findIndex((r) => r.date === imp.date &&
+      (Math.abs(r.distance - imp.distance) < 0.6 || (r.memo || "").includes("推定")));
+    if (byDate >= 0) {
+      const cur = next[byDate];
+      const bigDiff = Math.abs(cur.distance - imp.distance) >= 2;
+      next[byDate] = {
+        ...cur,
+        type: bigDiff ? imp.type : cur.type,
+        distance: imp.distance, duration: imp.duration, pace: imp.pace,
+        avgHr: imp.avgHr ?? cur.avgHr, maxHr: imp.maxHr ?? cur.maxHr, laps: imp.laps,
+      };
+      changed = true;
+    } else {
+      next.push({ ...imp });
+      changed = true;
+    }
+  }
+  if (changed) next.sort((a, b) => a.date.localeCompare(b.date));
+  return { next, changed };
+}
+
+const ADVICE_IMPORT = {"2026-02-22": "【過去チャットの分析】姫路城マラソン失速の主因はエネルギー枯渇＋脱水（ペースと心拍が同時低下）。前日の自転車による疲労、気温約20度、下りの攻めすぎも要因。心拍167〜168を維持し続けたことが消耗を加速。", "2026-04-05": "【ASICSランニングラボ測定結果】ATペース5'27\"/km（心拍167）、RCTペース4'48\"/km（心拍179）、最大心拍193、体脂肪17.5%。弱点は膝屈曲筋力（ハムストリング・臀部、10段階中3〜4）。この測定値が以後の練習ゾーン設定の基準。", "2026-05-16": "【過去チャットの分析】19度・心拍158、15km以降に160超え。原因は5/10比+6秒速いペースと気温上昇の複合（前日練習の疲労ではないと修正）。前日のジョグ＋流しは「脚の目覚め」として有効、継続推奨。次回は5/10同等までペースを落とすこと。", "2026-05-19": "【過去チャットの分析】ビルドアップ5km目4'59\"/km・心拍168。5/7の4'57\"とほぼ同条件で再現性を確認し「4'59〜5'05\"/km・心拍165〜168」がTペース〜RCT手前として定着。ピッチ185は新記録。", "2026-05-24": "【過去チャットの分析】20度で心拍144の理想的な心拍管理。姫路城（同20度で失速）との比較で「ペースを落とし心拍管理すれば20度でも走れる」ことを証明。課題は脱水（8kmで喉の渇き）→ソフトフラスク等の給水戦略を確立すること。神戸当日20度予報なら5'30〜5'35\"/kmへ落とす判断を。", "2026-05-26": "【過去チャットの分析】20度でTペース6km維持。涼しい日比+6拍だが許容範囲。6月は「ペース目標撤廃、心拍目標のみ」で運用。次回ビルドアップは6km目4'50\"/km・心拍175〜178でRCT実測を狙う（暑ければ無理せずTペース維持）。", "2026-06-09": "【過去チャットの分析】18度・最速5'03\"/km・心拍172。Tペースを2km連続維持した負荷は単発最速4'57\"と同等以上の練習効果。通勤前8kmで過去最高水準のビルドアップ走。", "2026-06-11": "【過去チャットの分析】24度・10kmで心拍147は暑熱適応の明確な証拠（5/28は6kmで139）。3〜9kmは5'58〜6'05\"に収まり目標6'00\"/kmをほぼ完璧に達成。", "2026-06-28": "【過去チャットの分析】20km・平均心拍145は今シーズンのロング走ベスト。神戸マラソンに向けた確かな土台。", "2026-06-30": "【6月総括】「暑熱の中で心拍管理を完全習得し、Mペース走を導入した月」。距離は目標未達だが質的成果（心拍管理・Mペース走・25km新記録・暑熱適応）は5月を大きく上回る。7月の最重要目標：30km走の初達成、ジェルアラート設定、月間180km。", "2026-07-02": "【過去チャットの分析】24度・11kmで平均心拍138は今シーズン最高水準（6/11の同条件比で1km長く4拍低い）。流し3本は4'35→4'23→4'20と良好（6/27の4'04はシューズ差）。序盤の心拍乱れは上腕センサーの緩みが原因。"};
+// 過去チャットの分析コメントをメモに追記（未追記の記録のみ）
+function applyAdvice(base) {
+  let changed = false;
+  const next = base.map((r) => {
+    const adv = ADVICE_IMPORT[r.date];
+    if (adv && !(r.memo || "").includes(adv.slice(0, 20))) {
+      changed = true;
+      return { ...r, memo: r.memo ? r.memo + "\n\n" + adv : adv };
+    }
+    return r;
+  });
+  return { next, changed };
+}
+
+// ---- COROSラップ表（縦並び形式）のパーサー ----
+function parseLapTable(text) {
+  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const laps = [];
+  for (let i = 0; i < lines.length; i++) {
+    const dm = lines[i].match(/^(\d+(?:\.\d+)?)\s*km$/);
+    if (!dm) continue;
+    const tm = (lines[i + 1] || "").match(/^(\d{1,2}):(\d{2}):(\d{2})$/);
+    const pm = (lines[i + 2] || "").match(/^(\d{1,2})['’](\d{2})["”]?\s*\/km$/);
+    if (!tm || !pm) continue;
+    const hr = /^\d{2,3}$/.test(lines[i + 3] || "") ? +lines[i + 3] : null;
+    laps.push({ dist: parseFloat(dm[1]), sec: +tm[1] * 3600 + +tm[2] * 60 + +tm[3], pace: +pm[1] * 60 + +pm[2], hr });
+    i += 3;
+  }
+  if (laps.length === 0) return null;
+  const distance = laps.reduce((s, l) => s + l.dist, 0);
+  const duration = laps.reduce((s, l) => s + l.sec, 0);
+  const hrLaps = laps.filter((l) => l.hr);
+  const avgHr = hrLaps.length
+    ? Math.round(hrLaps.reduce((s, l) => s + l.hr * l.dist, 0) / hrLaps.reduce((s, l) => s + l.dist, 0))
+    : null;
+  const maxHr = hrLaps.length ? Math.max(...hrLaps.map((l) => l.hr)) : null;
+  return { distance: +distance.toFixed(2), duration, avgHr, maxHr, laps };
+}
+
+function parseFreeText(text) {
+  const r = {};
+  let m = text.match(/(\d+(?:\.\d+)?)\s*(?:km|キロ|㎞)/i);
+  if (m) r.distance = parseFloat(m[1]);
+  m = text.match(/(\d{1,2}):(\d{2}):(\d{2})/);
+  if (m) r.duration = +m[1] * 3600 + +m[2] * 60 + +m[3];
+  m = text.match(/(?:ペース|pace)[^\d]{0,10}(\d{1,2})[:'’](\d{2})/i);
+  if (m) r.pace = +m[1] * 60 + +m[2];
+  m = text.match(/(?:平均心拍|心拍|HR)[^\d]{0,10}(\d{2,3})/i);
+  if (m) r.avgHr = +m[1];
+  return r;
+}
+
+function parseMeta(text) {
+  const r = {};
+  let m = text.match(/(\d{4})[\/年.\-](\d{1,2})[\/月.\-](\d{1,2})/);
+  if (m) r.date = `${m[1]}-${pad(m[2])}-${pad(m[3])}`;
+  else {
+    m = text.match(/(\d{1,2})\/(\d{1,2})/) || text.match(/(\d{1,2})月(\d{1,2})日/);
+    if (m) r.date = `${new Date().getFullYear()}-${pad(m[1])}-${pad(m[2])}`;
+  }
+  for (const t of RUN_TYPES) if (text.includes(t)) { r.type = t; break; }
+  if (!r.type) {
+    if (/リカバリー|回復/.test(text)) r.type = "リカバリー走";
+    else if (/ビルドアップ/.test(text)) r.type = "ビルドアップ走";
+    else if (/ロング|LSD/.test(text)) r.type = "ロング走";
+  }
+  m = text.match(/気温\s*(\d{1,2})\s*度/);
+  if (m) r.temp = +m[1];
+  return r;
+}
+
+const emptyForm = () => ({
+  date: new Date().toISOString().slice(0, 10),
+  type: "ジョグ", distance: "", duration: "", avgHr: "", maxHr: "", memo: "",
+});
+
+function RunningLog() {
+  const [runs, setRuns] = useState([]);
+  const [tab, setTab] = useState("cal");
+  const [paste, setPaste] = useState("");
+  const [form, setForm] = useState(emptyForm());
+  const [pendingLaps, setPendingLaps] = useState(null);
+  const [editId, setEditId] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [msg, setMsg] = useState("");
+  const [race, setRace] = useState({ name: "", date: "" });
+  const [imgBusy, setImgBusy] = useState(false);
+  const [imgPreview, setImgPreview] = useState(null);
+  const fileRef = useRef(null);
+
+  // カレンダー状態
+  const today = new Date();
+  const [calY, setCalY] = useState(today.getFullYear());
+  const [calM, setCalM] = useState(today.getMonth()); // 0-11
+  const [selDate, setSelDate] = useState(null);
+
+  useEffect(() => {
+    (async () => {
+      const raw = await storeGet(STORAGE_KEY);
+      let base = INITIAL_DATA;
+      if (raw) { try { base = migrate(JSON.parse(raw)); } catch (_) {} }
+      const m1 = mergeImport(base);
+      const m2 = applyAdvice(m1.next);
+      setRuns(m2.next);
+      if (!raw || m1.changed || m2.changed) await storeSet(STORAGE_KEY, JSON.stringify(m2.next));
+      const rc = await storeGet(RACE_KEY);
+      if (rc) { try { setRace(JSON.parse(rc)); } catch (_) {} }
+      setLoading(false);
+    })();
+  }, []);
+
+  const save = async (next) => {
+    setRuns(next);
+    const ok = await storeSet(STORAGE_KEY, JSON.stringify(next));
+    setMsg(ok ? "保存しました" : "保存に失敗しました。通信環境を確認してください");
+    setTimeout(() => setMsg(""), 2000);
+  };
+
+  const editRace = async () => {
+    const name = window.prompt("レース名を入力", race.name || "");
+    if (name === null) return;
+    const date = window.prompt("開催日を入力（YYYY-MM-DD）", race.date || "2026-11-22");
+    if (date === null) return;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      setMsg("日付はYYYY-MM-DD形式で入力してください");
+      setTimeout(() => setMsg(""), 3000);
+      return;
+    }
+    const nextRace = { name: name.trim(), date };
+    setRace(nextRace);
+    await storeSet(RACE_KEY, JSON.stringify(nextRace));
+  };
+
+
+  // ---- AI分析（固定の小さなコンテキストで毎回独立に呼び出し：トークン累積なし） ----
+  const [aiBusyId, setAiBusyId] = useState(null);
+  const aiAnalyze = async (run, list = null) => {
+    if (!localStorage.getItem("runlog-api-key")) {
+      setMsg("AI分析・画像解析にはヘッダーのAPIキーボタンから登録が必要です");
+      setTimeout(() => setMsg(""), 4000);
+      return;
+    }
+    const base = list || runs;
+    setAiBusyId(run.id);
+    try {
+      const idx = base.findIndex((r) => r.id === run.id);
+      const recent = base.slice(Math.max(0, idx - 5), idx)
+        .map((r) => `${r.date} ${r.type} ${r.distance}km ${fmtPace(r.pace)}/km HR${r.avgHr ?? "-"}`).join("\n");
+      const lapText = (run.laps || []).map((l, i) => `${i + 1}: ${l.dist}km ${fmtPace(l.pace)}/km HR${l.hr ?? "-"}`).join("\n");
+      const profile = `ランナー: 56歳男性。${race.name && race.date ? `${race.name}(${race.date})` : "目標レース"}でサブ4(目標3:50)。週4回練習(火ポイント/木ジョグ+流し/土ロング/日リカバリー)。練習ゾーン: 回復6'40-7'00(HR<130)、イージー5'50-6'10(HR140-150)、Mペース5'25(HR160-165)、AT5'20(HR163-167)、T5'05-5'10(HR170-175)、RCT4'45-4'50(HR175-180)。最大心拍193。ロング走は心拍155以下厳守。過去レース: 松江4:26(35km失速)、姫路4:50(26km失速・脱水主因)。`;
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            "x-api-key": localStorage.getItem("runlog-api-key") || "",
+            "anthropic-version": "2023-06-01",
+            "anthropic-dangerous-direct-browser-access": "true",
+          },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6",
+          max_tokens: 1000,
+          messages: [{
+            role: "user",
+            content: `${profile}\n\n直近の練習:\n${recent || "なし"}\n\n今回の練習:\n${run.date} ${run.type} ${run.distance}km ${fmtDur(run.duration)} ${fmtPace(run.pace)}/km 平均心拍${run.avgHr ?? "-"} 最大${run.maxHr ?? "-"}\nラップ:\n${lapText || "なし"}\n\nこの練習を分析し、評価と次へのアドバイスを日本語400字以内で簡潔に。表やMarkdown記法は使わずプレーンテキストで。`,
+          }],
+        }),
+      });
+      const data = await response.json();
+      const text = (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("").trim();
+      if (!text) throw new Error("empty");
+      const next = base.map((r) => r.id === run.id
+        ? { ...r, memo: (r.memo ? r.memo + "\n\n" : "") + "【AI分析 " + new Date().toISOString().slice(0, 10) + "】\n" + text }
+        : r);
+      await save(next);
+    } catch (e) {
+      setMsg("AI分析に失敗しました。少し時間をおいて再実行してください");
+      setTimeout(() => setMsg(""), 3000);
+    }
+    setAiBusyId(null);
+  };
+
+  // ---- テキスト解析 ----
+  const applyPaste = () => {
+    const meta = parseMeta(paste);
+    const lap = parseLapTable(paste);
+    const p = lap || parseFreeText(paste);
+    setPendingLaps(lap ? lap.laps : null);
+    setForm((f) => ({
+      ...f,
+      date: meta.date || f.date,
+      type: meta.type || f.type,
+      distance: p.distance ?? f.distance,
+      duration: p.duration ? fmtDur(p.duration) : f.duration,
+      avgHr: p.avgHr ?? f.avgHr,
+      maxHr: p.maxHr ?? f.maxHr,
+      memo: (meta.temp ? `気温${meta.temp}度。` : "") + (lap ? `ラップ${lap.laps.length}本を解析済み` : ""),
+    }));
+    setMsg(lap ? `ラップ表を解析しました（${lap.laps.length}本・${p.distance}km）` : "テキストを解析しました。内容を確認してください");
+    setTimeout(() => setMsg(""), 3000);
+  };
+
+  // ---- スクリーンショット解析（AIで読み取り） ----
+  const analyzeImage = async (file) => {
+    if (!file || !file.type.startsWith("image/")) return;
+    setImgBusy(true);
+    setMsg("スクリーンショットを解析中…");
+    try {
+      const base64 = await new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result.split(",")[1]);
+        r.onerror = () => rej(new Error("読み込み失敗"));
+        r.readAsDataURL(file);
+      });
+      setImgPreview(URL.createObjectURL(file));
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            "x-api-key": localStorage.getItem("runlog-api-key") || "",
+            "anthropic-version": "2023-06-01",
+            "anthropic-dangerous-direct-browser-access": "true",
+          },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6",
+          max_tokens: 1000,
+          messages: [{
+            role: "user",
+            content: [
+              { type: "image", source: { type: "base64", media_type: file.type, data: base64 } },
+              { type: "text", text: "これはCOROSアプリのランニング記録のスクリーンショットです。以下のJSONのみを返してください。前置きやMarkdownの```は不要です。読み取れない項目はnullにしてください。\n{\"date\":\"YYYY-MM-DD\",\"distance_km\":数値,\"duration_sec\":合計秒数,\"avg_pace_sec_per_km\":数値,\"avg_hr\":数値,\"max_hr\":数値,\"type\":\"ジョグ|リカバリー走|ビルドアップ走|テンポ走|Mペース走|ロング走|インターバル|レース|その他 のいずれか\"}" },
+            ],
+          }],
+        }),
+      });
+      const data = await response.json();
+      const text = (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("");
+      const clean = text.replace(/```json|```/g, "").trim();
+      const j = JSON.parse(clean);
+      setForm((f) => ({
+        ...f,
+        date: j.date || f.date,
+        type: RUN_TYPES.includes(j.type) ? j.type : f.type,
+        distance: j.distance_km ?? f.distance,
+        duration: j.duration_sec ? fmtDur(j.duration_sec)
+          : j.avg_pace_sec_per_km && j.distance_km ? fmtDur(Math.round(j.avg_pace_sec_per_km * j.distance_km)) : f.duration,
+        avgHr: j.avg_hr ?? f.avgHr,
+        maxHr: j.max_hr ?? f.maxHr,
+      }));
+      setMsg("スクリーンショットを解析しました。内容を確認して保存してください");
+    } catch (e) {
+      setMsg("画像の解析に失敗しました。テキスト貼り付けか手入力をお試しください");
+    }
+    setImgBusy(false);
+    setTimeout(() => setMsg(""), 4000);
+  };
+
+  const parseDurInput = (v) => {
+    if (!v) return 0;
+    const parts = String(v).split(":").map(Number);
+    if (parts.some(isNaN)) return 0;
+    if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    if (parts.length === 2) return parts[0] * 60 + parts[1];
+    return parts[0] * 60;
+  };
+
+  const submit = () => {
+    const durSec = parseDurInput(form.duration);
+    const dist = parseFloat(form.distance);
+    if (!form.date || !dist || !durSec) {
+      setMsg("日付・距離・タイムは必須です");
+      setTimeout(() => setMsg(""), 2500);
+      return;
+    }
+    const prev = editId ? runs.find((r) => r.id === editId) : null;
+    const rec = {
+      id: editId || Date.now().toString(36),
+      date: form.date, type: form.type,
+      distance: dist, duration: durSec, pace: durSec / dist,
+      avgHr: form.avgHr ? +form.avgHr : null,
+      maxHr: form.maxHr ? +form.maxHr : null,
+      memo: form.memo || "",
+      laps: pendingLaps || prev?.laps || null,
+    };
+    const next = editId ? runs.map((r) => (r.id === editId ? rec : r)) : [...runs, rec];
+    next.sort((a, b) => a.date.localeCompare(b.date));
+    save(next);
+    const d = new Date(rec.date + "T00:00:00");
+    setCalY(d.getFullYear()); setCalM(d.getMonth()); setSelDate(rec.date);
+    setForm(emptyForm()); setPaste(""); setEditId(null); setPendingLaps(null); setImgPreview(null);
+    setTab("cal");
+    if (!editId) aiAnalyze(rec, next); // 新規保存後、自動でAI分析・アドバイスをメモに追記
+  };
+
+  const remove = (id) => save(runs.filter((r) => r.id !== id));
+  const edit = (r) => {
+    setEditId(r.id); setPendingLaps(null);
+    setForm({
+      date: r.date, type: r.type, distance: r.distance,
+      duration: fmtDur(r.duration), avgHr: r.avgHr ?? "", maxHr: r.maxHr ?? "", memo: r.memo,
+    });
+    setTab("input");
+  };
+
+  // ---- 集計 ----
+  const runsByDate = useMemo(() => {
+    const m = new Map();
+    for (const r of runs) {
+      if (!m.has(r.date)) m.set(r.date, []);
+      m.get(r.date).push(r);
+    }
+    return m;
+  }, [runs]);
+
+  const monthKm = runs.filter((r) => r.date.startsWith(`${calY}-${pad(calM + 1)}`)).reduce((s, r) => s + r.distance, 0);
+  const yearKm = runs.filter((r) => r.date.startsWith(`${calY}-`)).reduce((s, r) => s + r.distance, 0);
+
+  const [period, setPeriod] = useState("week"); // week | month | year
+
+  // 期間集計（ペース=距離加重平均、心拍=距離加重平均、距離=合計、回数）
+  const chartData = useMemo(() => {
+    const keyOf = (r) =>
+      period === "year" ? r.date.slice(0, 4)
+      : period === "month" ? r.date.slice(0, 7)
+      : mondayOf(r.date);
+    const labelOf = (k) =>
+      period === "year" ? `${k}年`
+      : period === "month" ? `${+k.slice(5)}月`
+      : `${+k.slice(5, 7)}/${+k.slice(8, 10)}〜`;
+    const m = new Map();
+    for (const r of runs) {
+      const k = keyOf(r);
+      if (!m.has(k)) m.set(k, { dist: 0, dur: 0, hrKm: 0, hrDist: 0, n: 0 });
+      const a = m.get(k);
+      a.dist += r.distance; a.dur += r.duration; a.n += 1;
+      if (r.avgHr) { a.hrKm += r.avgHr * r.distance; a.hrDist += r.distance; }
+    }
+    return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([k, a]) => ({
+      d: labelOf(k),
+      pace: Math.round(a.dur / a.dist),
+      dist: +a.dist.toFixed(1),
+      hr: a.hrDist ? Math.round(a.hrKm / a.hrDist) : null,
+      n: a.n,
+    }));
+  }, [runs, period]);
+
+  // ---- カレンダー生成 ----
+  const calCells = useMemo(() => {
+    const first = new Date(calY, calM, 1);
+    const start = new Date(first);
+    start.setDate(1 - first.getDay()); // 日曜始まり
+    const cells = [];
+    const d = new Date(start);
+    for (let i = 0; i < 42; i++) {
+      cells.push(new Date(d));
+      d.setDate(d.getDate() + 1);
+    }
+    // 6週目が全て翌月なら5週表示
+    if (cells.slice(35).every((c) => c.getMonth() !== calM)) cells.length = 35;
+    return cells;
+  }, [calY, calM]);
+
+  const moveMonth = (delta) => {
+    const d = new Date(calY, calM + delta, 1);
+    setCalY(d.getFullYear()); setCalM(d.getMonth()); setSelDate(null);
+  };
+
+  const selRuns = selDate ? runsByDate.get(selDate) || [] : [];
+  const daysToRace = race.date ? Math.ceil((new Date(race.date + "T00:00:00") - new Date()) / 86400000) : null;
+
+  const Stat = ({ label, value, sub }) => (
+    <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 10, padding: "12px 16px", flex: 1, minWidth: 120 }}>
+      <div style={{ fontSize: 13, color: C.sub, letterSpacing: 1 }}>{label}</div>
+      <div style={{ fontSize: 28, fontWeight: 700, fontVariantNumeric: "tabular-nums", color: C.ink }}>{value}</div>
+      {sub && <div style={{ fontSize: 13, color: C.sub }}>{sub}</div>}
+    </div>
+  );
+
+  const exportJson = () => {
+    const blob = new Blob([JSON.stringify(runs, null, 1)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `runlog-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+  };
+  const importRef = useRef(null);
+  const importJson = (file) => {
+    const rd = new FileReader();
+    rd.onload = () => {
+      try {
+        const data = JSON.parse(rd.result);
+        if (!Array.isArray(data)) throw new Error();
+        if (window.confirm(`${data.length}件のデータで置き換えます。よろしいですか？`)) save(migrate(data));
+      } catch { setMsg("JSONの読み込みに失敗しました"); setTimeout(() => setMsg(""), 3000); }
+    };
+    rd.readAsText(file);
+  };
+  const setApiKey = () => {
+    const cur = localStorage.getItem("runlog-api-key") || "";
+    const k = window.prompt("Claude APIキー（AI分析・画像解析用。空欄で削除）", cur);
+    if (k === null) return;
+    if (k) localStorage.setItem("runlog-api-key", k.trim());
+    else localStorage.removeItem("runlog-api-key");
+    setMsg(k ? "APIキーを保存しました（この端末のみ）" : "APIキーを削除しました");
+    setTimeout(() => setMsg(""), 3000);
+  };
+
+  if (loading) return <div style={{ padding: 40, fontFamily: "sans-serif", color: C.sub }}>読み込み中…</div>;
+
+  return (
+    <div style={{ minHeight: "100vh", background: C.bg, color: C.ink, fontFamily: "'Helvetica Neue', 'Hiragino Kaku Gothic ProN', sans-serif" }}>
+      <header style={{ background: "#004C87", color: "#FFFFFF", padding: "18px 20px" }}>
+        <div style={{ maxWidth: 900, margin: "0 auto", display: "flex", alignItems: "baseline", gap: 14, flexWrap: "wrap" }}>
+          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 800, letterSpacing: 2 }}>
+            RUN LOG <span style={{ color: C.accent }}>/</span> SUB-4
+          </h1>
+          <span onClick={editRace} title="クリックしてレース名・開催日を変更"
+            style={{ fontSize: 14, opacity: 0.85, cursor: "pointer" }}>
+            {race.name && race.date
+              ? `${race.name}（${+race.date.slice(5, 7)}/${+race.date.slice(8, 10)}）まで ${daysToRace > 0 ? `${daysToRace}日` : "—"} ✎`
+              : "レース未設定（ここをクリックして入力）✎"}
+            {" ・ 目標 3:50（Mペース 5'27\"/km）"}
+          </span>
+          <span style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+            <button onClick={exportJson} style={hdrBtn}>書き出し</button>
+            <button onClick={() => importRef.current?.click()} style={hdrBtn}>読み込み</button>
+            <button onClick={setApiKey} style={hdrBtn}>APIキー</button>
+            <input ref={importRef} type="file" accept="application/json" style={{ display: "none" }}
+              onChange={(e) => { if (e.target.files?.[0]) importJson(e.target.files[0]); e.target.value = ""; }} />
+          </span>
+        </div>
+      </header>
+
+      <div style={{ maxWidth: 900, margin: "0 auto", padding: "16px 16px 60px" }}>
+        {/* 月間・年間距離 */}
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
+          <Stat label={`月間走行距離（${calY}年${calM + 1}月）`} value={`${monthKm.toFixed(1)} km`} />
+          <Stat label={`年間走行距離（${calY}年）`} value={`${yearKm.toFixed(1)} km`} />
+        </div>
+
+        <div style={{ display: "flex", gap: 4, marginBottom: 16, borderBottom: `2px solid ${C.line}` }}>
+          {[["cal", "記録カレンダー"], ["chart", "グラフ比較"], ["input", editId ? "記録を編集" : "記録を追加"]].map(([k, label]) => (
+            <button key={k} onClick={() => setTab(k)}
+              style={{
+                padding: "10px 18px", border: "none", cursor: "pointer", fontSize: 16, fontWeight: 600,
+                background: "transparent", color: tab === k ? C.accent : C.sub,
+                borderBottom: tab === k ? `3px solid ${C.accent}` : "3px solid transparent", marginBottom: -2,
+              }}>{label}</button>
+          ))}
+        </div>
+
+        {msg && <div style={{ background: C.accentSoft, color: C.accent, padding: "8px 14px", borderRadius: 8, marginBottom: 12, fontSize: 15 }}>{msg}</div>}
+
+        {/* ---- カレンダー ---- */}
+        {tab === "cal" && (
+          <div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 16, marginBottom: 10 }}>
+              <button onClick={() => moveMonth(-1)} style={navBtn}>◀ 前月</button>
+              <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: 1 }}>{calY}年 {calM + 1}月</div>
+              <button onClick={() => moveMonth(1)} style={navBtn}>翌月 ▶</button>
+            </div>
+
+            <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 10, overflow: "hidden" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)" }}>
+                {WEEKDAYS.map((w, i) => (
+                  <div key={w} style={{
+                    padding: "6px 0", textAlign: "center", fontSize: 14, fontWeight: 700,
+                    color: i === 0 ? "#D64550" : i === 6 ? "#3D6FA0" : C.sub,
+                    borderBottom: `1px solid ${C.line}`, background: C.bg,
+                  }}>{w}</div>
+                ))}
+                {calCells.map((d, i) => {
+                  const key = ymd(d);
+                  const inMonth = d.getMonth() === calM;
+                  const dayRuns = runsByDate.get(key) || [];
+                  const ran = dayRuns.length > 0;
+                  const km = dayRuns.reduce((s, r) => s + r.distance, 0);
+                  const isSel = selDate === key;
+                  const isToday = key === ymd(today);
+                  return (
+                    <div key={i}
+                      onClick={() => ran && setSelDate(isSel ? null : key)}
+                      style={{
+                        minHeight: 72, padding: "4px 4px 6px", boxSizing: "border-box",
+                        borderBottom: `1px solid ${C.line}`,
+                        borderRight: (i % 7) < 6 ? `1px solid ${C.line}` : "none",
+                        background: isSel ? C.accentSoft : inMonth ? "#FFFFFF" : "#F5F8FB",
+                        cursor: ran ? "pointer" : "default",
+                        opacity: inMonth ? 1 : 0.45,
+                      }}>
+                      <div style={{
+                        width: 24, height: 24, lineHeight: "22px", textAlign: "center",
+                        fontSize: 14, fontWeight: 700, fontVariantNumeric: "tabular-nums",
+                        borderRadius: "50%",
+                        border: ran ? `2px solid ${C.accent}` : isToday ? `1px dashed ${C.sub}` : "2px solid transparent",
+                        color: ran ? C.accent : d.getDay() === 0 ? "#D64550" : d.getDay() === 6 ? "#3D6FA0" : C.ink,
+                        background: ran ? "#FFFFFF" : "transparent",
+                        boxSizing: "border-box",
+                      }}>{d.getDate()}</div>
+                      {ran && (
+                        <div style={{ marginTop: 3, textAlign: "center" }}>
+                          <div style={{ fontSize: 14, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{km.toFixed(km >= 10 ? 0 : 1)}km</div>
+                          <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.2 }}>
+                            {[...new Set(dayRuns.map((r) => r.type))].join("・")}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* 選択日の詳細（分析コメント） */}
+            {selDate && selRuns.length > 0 && (
+              <div style={{ marginTop: 16 }}>
+                <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 8, color: C.accent }}>
+                  {+selDate.slice(5, 7)}月{+selDate.slice(8, 10)}日の記録
+                </div>
+                {selRuns.map((r) => {
+                  const diff = Math.round(r.pace - SUB4_PACE_SEC);
+                  return (
+                    <div key={r.id} style={{ background: C.card, border: `1px solid ${C.line}`, borderLeft: `4px solid ${C.accent}`, borderRadius: 10, padding: "14px 16px", marginBottom: 10 }}>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 16px", alignItems: "baseline", marginBottom: 6 }}>
+                        <span style={{ fontSize: 15, fontWeight: 700, background: C.bg, border: `1px solid ${C.line}`, borderRadius: 6, padding: "2px 10px" }}>{r.type}</span>
+                        <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: 700 }}>{r.distance.toFixed(2)} km</span>
+                        <span style={{ fontVariantNumeric: "tabular-nums" }}>{fmtDur(r.duration)}</span>
+                        <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: 700 }}>{fmtPace(r.pace)}/km</span>
+                        <span style={{ fontSize: 14, fontWeight: 700, color: diff <= 0 ? C.ok : C.sub }}>
+                          {diff <= 0 ? `サブ4比 ▲${Math.abs(diff)}秒` : `サブ4比 ＋${diff}秒`}
+                        </span>
+                        {r.avgHr && <span style={{ fontSize: 14, color: C.sub }}>♥ 平均{r.avgHr}{r.maxHr ? ` / 最大${r.maxHr}` : ""}</span>}
+                        <span style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+                          <button onClick={() => aiAnalyze(r)} disabled={aiBusyId === r.id}
+                            style={{ ...miniBtn, color: C.ok, fontWeight: 700 }}>
+                            {aiBusyId === r.id ? "分析中…" : "AI分析"}
+                          </button>
+                          <button onClick={() => edit(r)} style={miniBtn}>編集</button>
+                          <button onClick={() => remove(r.id)} style={{ ...miniBtn, color: C.accent }}>削除</button>
+                        </span>
+                      </div>
+                      {r.memo ? (
+                        <div style={{ fontSize: 15, lineHeight: 1.7, whiteSpace: "pre-wrap", borderTop: `1px dashed ${C.line}`, paddingTop: 8 }}>
+                          <span style={{ fontSize: 13, fontWeight: 700, color: C.sub, display: "block", marginBottom: 2 }}>分析コメント</span>
+                          {r.memo}
+                        </div>
+                      ) : (
+                        <div style={{ fontSize: 14, color: C.sub }}>分析コメントは未登録です（編集から追加できます）</div>
+                      )}
+                      {r.laps && (
+                        <div style={{ marginTop: 8, overflowX: "auto" }}>
+                          <table style={{ fontSize: 14, borderCollapse: "collapse", fontVariantNumeric: "tabular-nums" }}>
+                            <thead><tr style={{ color: C.sub }}><th style={th}>#</th><th style={th}>距離</th><th style={th}>ペース</th><th style={th}>心拍</th></tr></thead>
+                            <tbody>
+                              {r.laps.map((l, i) => (
+                                <tr key={i}>
+                                  <td style={td}>{i + 1}</td>
+                                  <td style={td}>{l.dist.toFixed(2)}km</td>
+                                  <td style={{ ...td, fontWeight: l.pace <= M_PACE_SEC ? 700 : 400, color: l.pace <= M_PACE_SEC ? C.ok : C.ink }}>{fmtPace(l.pace)}</td>
+                                  <td style={td}>{l.hr ?? "–"}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {!selDate && (
+              <div style={{ marginTop: 12, fontSize: 14, color: C.sub, textAlign: "center" }}>
+                ○のついた日付をクリックすると、分析コメントを表示します
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ---- 入力 ---- */}
+        {tab === "input" && (
+          <div style={{ display: "grid", gap: 14 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 14 }}>
+              {/* テキスト貼り付け */}
+              <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 10, padding: 16 }}>
+                <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 8 }}>①-A テキストを貼り付け</div>
+                <div style={{ fontSize: 14, color: C.sub, marginBottom: 8 }}>
+                  COROSのラップ表（ラップ／距離／時間／平均ペース／平均心拍数…の縦並び）に対応。日付や気温を含む説明文も一緒に貼ると自動反映されます。
+                </div>
+                <textarea value={paste} onChange={(e) => setPaste(e.target.value)}
+                  placeholder={"例：\n7/4(土) ロング走 気温23度\nラップ\n距離\n時間\n平均ペース\n平均心拍数\n…\n1\n1.00km\n00:05:54\n05'54\"/km\n137\n…"}
+                  style={{ width: "100%", minHeight: 140, border: `1px solid ${C.line}`, borderRadius: 8, padding: 10, fontSize: 15, fontFamily: "monospace", boxSizing: "border-box", resize: "vertical", background: "#FFFFFF", color: "#1A2B3C" }} />
+                <button onClick={applyPaste}
+                  style={{ marginTop: 8, background: "#004C87", color: "#FFFFFF", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 15, fontWeight: 600, cursor: "pointer" }}>
+                  解析してフォームに反映
+                </button>
+              </div>
+
+              {/* スクリーンショット貼り付け */}
+              <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 10, padding: 16 }}
+                onPaste={(e) => {
+                  const item = [...(e.clipboardData?.items || [])].find((it) => it.type.startsWith("image/"));
+                  if (item) analyzeImage(item.getAsFile());
+                }}>
+                <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 8 }}>①-B スクリーンショットを貼り付け</div>
+                <div style={{ fontSize: 14, color: C.sub, marginBottom: 8 }}>
+                  COROSアプリの画面キャプチャをここに貼り付け（Ctrl+V）するか、ファイルを選択してください。AIが距離・タイム・心拍を読み取ります。
+                </div>
+                <div
+                  onClick={() => fileRef.current?.click()}
+                  style={{
+                    border: `2px dashed ${C.line}`, borderRadius: 8, minHeight: 120,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    cursor: "pointer", fontSize: 15, color: C.sub, padding: 10,
+                    background: imgPreview ? "#fff" : C.bg,
+                  }}>
+                  {imgBusy ? "解析中…" : imgPreview
+                    ? <img src={imgPreview} alt="スクリーンショット" style={{ maxHeight: 160, maxWidth: "100%", borderRadius: 6 }} />
+                    : "ここをクリックして画像を選択（または Ctrl+V で貼り付け）"}
+                </div>
+                <input ref={fileRef} type="file" accept="image/*" style={{ display: "none" }}
+                  onChange={(e) => { if (e.target.files?.[0]) analyzeImage(e.target.files[0]); e.target.value = ""; }} />
+              </div>
+            </div>
+
+            {/* 確認・保存フォーム */}
+            <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 10, padding: 16 }}>
+              <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 10 }}>② 内容を確認・修正して保存</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10 }}>
+                <label style={{ fontSize: 14, color: C.sub }}>日付
+                  <input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} style={inp} /></label>
+                <label style={{ fontSize: 14, color: C.sub }}>種別
+                  <select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })} style={inp}>
+                    {RUN_TYPES.map((t) => <option key={t}>{t}</option>)}
+                  </select></label>
+                <label style={{ fontSize: 14, color: C.sub }}>距離 (km)
+                  <input value={form.distance} onChange={(e) => setForm({ ...form, distance: e.target.value })} placeholder="10.0" style={inp} /></label>
+                <label style={{ fontSize: 14, color: C.sub }}>タイム (h:mm:ss / mm:ss)
+                  <input value={form.duration} onChange={(e) => setForm({ ...form, duration: e.target.value })} placeholder="58:32" style={inp} /></label>
+                <label style={{ fontSize: 14, color: C.sub }}>平均心拍
+                  <input value={form.avgHr} onChange={(e) => setForm({ ...form, avgHr: e.target.value })} placeholder="152" style={inp} /></label>
+                <label style={{ fontSize: 14, color: C.sub }}>最大心拍
+                  <input value={form.maxHr} onChange={(e) => setForm({ ...form, maxHr: e.target.value })} placeholder="171" style={inp} /></label>
+              </div>
+              {pendingLaps && (
+                <div style={{ marginTop: 10, fontSize: 14, color: C.ok }}>✓ ラップ{pendingLaps.length}本を記録に添付します</div>
+              )}
+              <label style={{ fontSize: 14, color: C.sub, display: "block", marginTop: 10 }}>分析コメント・メモ
+                <textarea value={form.memo} onChange={(e) => setForm({ ...form, memo: e.target.value })}
+                  style={{ ...inp, minHeight: 80, resize: "vertical", fontFamily: "inherit" }} /></label>
+              <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                <button onClick={submit}
+                  style={{ background: C.accent, color: "#fff", border: "none", borderRadius: 8, padding: "10px 22px", fontSize: 16, fontWeight: 700, cursor: "pointer" }}>
+                  {editId ? "更新する" : "保存する"}
+                </button>
+                {editId && (
+                  <button onClick={() => { setEditId(null); setForm(emptyForm()); setPendingLaps(null); setImgPreview(null); }}
+                    style={{ background: "transparent", color: C.sub, border: `1px solid ${C.line}`, borderRadius: 8, padding: "10px 16px", fontSize: 15, cursor: "pointer" }}>
+                    キャンセル
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ---- グラフ ---- */}
+        {tab === "chart" && (
+          <div style={{ display: "grid", gap: 20 }}>
+            <div style={{ display: "flex", gap: 6, justifyContent: "center" }}>
+              {[["week", "週間"], ["month", "月間"], ["year", "年間"]].map(([k, label]) => (
+                <button key={k} onClick={() => setPeriod(k)}
+                  style={{
+                    padding: "6px 18px", borderRadius: 20, fontSize: 15, fontWeight: 700, cursor: "pointer",
+                    border: `1px solid ${period === k ? C.accent : C.line}`,
+                    background: period === k ? C.accent : "#FFFFFF",
+                    color: period === k ? "#fff" : C.sub,
+                  }}>{label}</button>
+              ))}
+            </div>
+            <ChartCard title={`平均ペースの推移（${period === "week" ? "週" : period === "month" ? "月" : "年"}ごとの距離加重平均・上ほど速い）`}>
+              <ResponsiveContainer width="100%" height={260}>
+                <LineChart data={chartData} margin={{ top: 10, right: 16, left: 0, bottom: 0 }}>
+                  <CartesianGrid stroke={C.line} strokeDasharray="3 3" />
+                  <XAxis dataKey="d" fontSize={13} />
+                  <YAxis tickFormatter={fmtPace} fontSize={13} domain={["dataMin - 20", "dataMax + 20"]} reversed />
+                  <Tooltip formatter={(v) => [fmtPace(v) + "/km", "ペース"]} />
+                  <ReferenceLine y={SUB4_PACE_SEC} stroke={C.accent} strokeDasharray="6 4"
+                    label={{ value: "サブ4 5'41", fill: C.accent, fontSize: 13, position: "insideBottomRight" }} />
+                  <ReferenceLine y={M_PACE_SEC} stroke={C.ok} strokeDasharray="6 4"
+                    label={{ value: "Mペース 5'27", fill: C.ok, fontSize: 13, position: "insideTopRight" }} />
+                  <Line type="monotone" dataKey="pace" stroke={C.ink} strokeWidth={2} dot={{ r: 3 }} />
+                </LineChart>
+              </ResponsiveContainer>
+              <div style={{ fontSize: 13, color: C.sub, marginTop: 6 }}>
+                ※ リカバリー走・ロング走も含む全記録。練習種別ごとの狙いペースが異なる点に注意
+              </div>
+            </ChartCard>
+
+            <ChartCard title={`${period === "week" ? "週間" : period === "month" ? "月間" : "年間"}走行距離`}>
+              <ResponsiveContainer width="100%" height={220}>
+                <BarChart data={chartData} margin={{ top: 10, right: 16, left: 0, bottom: 0 }}>
+                  <CartesianGrid stroke={C.line} strokeDasharray="3 3" />
+                  <XAxis dataKey="d" fontSize={13} />
+                  <YAxis fontSize={13} unit=" km" />
+                  <Tooltip formatter={(v) => [v + " km", "距離"]} />
+                  <Bar dataKey="dist" fill={C.accent} radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </ChartCard>
+
+            <ChartCard title={`平均心拍の推移（${period === "week" ? "週" : period === "month" ? "月" : "年"}ごとの距離加重平均）`}>
+              <ResponsiveContainer width="100%" height={220}>
+                <LineChart data={chartData.filter((d) => d.hr)} margin={{ top: 10, right: 16, left: 0, bottom: 0 }}>
+                  <CartesianGrid stroke={C.line} strokeDasharray="3 3" />
+                  <XAxis dataKey="d" fontSize={13} />
+                  <YAxis fontSize={13} domain={[120, "dataMax + 5"]} unit=" bpm" />
+                  <Tooltip />
+                  <ReferenceLine y={155} stroke="#B07A00" strokeDasharray="6 4"
+                    label={{ value: "ロング走上限 155", fill: "#B07A00", fontSize: 13, position: "insideTopRight" }} />
+                  <Line type="monotone" dataKey="hr" name="平均心拍" stroke="#B07A00" strokeWidth={2} dot={{ r: 3 }} />
+                </LineChart>
+              </ResponsiveContainer>
+            </ChartCard>
+
+            <ChartCard title={`走行回数（${period === "week" ? "週4回が目標" : period === "month" ? "月別" : "年別"}）`}>
+              <ResponsiveContainer width="100%" height={220}>
+                <BarChart data={chartData} margin={{ top: 10, right: 16, left: 0, bottom: 0 }}>
+                  <CartesianGrid stroke={C.line} strokeDasharray="3 3" />
+                  <XAxis dataKey="d" fontSize={13} />
+                  <YAxis fontSize={13} unit=" 回" allowDecimals={false} />
+                  <Tooltip formatter={(v) => [v + " 回", "回数"]} />
+                  {period === "week" && <ReferenceLine y={4} stroke={C.ok} strokeDasharray="6 4" />}
+                  <Bar dataKey="n" fill={C.ink} radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </ChartCard>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const inp = {
+  width: "100%", boxSizing: "border-box", marginTop: 4, padding: "8px 10px",
+  border: "1px solid #C9D9E8", borderRadius: 8, fontSize: 16, background: "#FFFFFF",
+  fontVariantNumeric: "tabular-nums", color: "#1A2B3C",
+};
+const miniBtn = {
+  background: "transparent", border: "1px solid #C9D9E8", borderRadius: 6,
+  padding: "3px 10px", fontSize: 14, cursor: "pointer", color: "#5A7186",
+};
+const hdrBtn = {
+  background: "transparent", border: "1px solid rgba(255,255,255,0.45)", borderRadius: 6,
+  padding: "4px 10px", fontSize: 13, cursor: "pointer", color: "#FFFFFF",
+};
+const navBtn = {
+  background: "#FFFFFF", border: "1px solid #C9D9E8", borderRadius: 8,
+  padding: "6px 14px", fontSize: 15, cursor: "pointer", color: "#1A2B3C", fontWeight: 600,
+};
+const th = { padding: "3px 12px 3px 0", textAlign: "left", fontWeight: 600 };
+const td = { padding: "2px 12px 2px 0" };
+
+function ChartCard({ title, children }) {
+  return (
+    <div style={{ background: "#FFFFFF", border: "1px solid #C9D9E8", borderRadius: 10, padding: 16 }}>
+      <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 10 }}>{title}</div>
+      {children}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<RunningLog />);
+
+</script>
+</body>
+</html>
