@@ -6656,6 +6656,7 @@ function RunningLog() {
     name: "",
     date: ""
   });
+  const [storageOk, setStorageOk] = useState(true);
   const [imgBusy, setImgBusy] = useState(false);
   const [imgPreview, setImgPreview] = useState(null);
   const fileRef = useRef(null);
@@ -6684,6 +6685,8 @@ function RunningLog() {
           setRace(JSON.parse(rc));
         } catch (_) {}
       }
+      // 保存機能が実際に使えるか検査（未公開artifactでは失敗する）
+      setStorageOk(await storeSet("runlog-canary", "1"));
       setLoading(false);
     })();
   }, []);
@@ -7007,28 +7010,75 @@ function RunningLog() {
       color: C.sub
     }
   }, sub));
-  const exportJson = () => {
-    const blob = new Blob([JSON.stringify(runs, null, 1)], {
-      type: "application/json"
-    });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `runlog-${new Date().toISOString().slice(0, 10)}.json`;
-    a.click();
+  const [xferMode, setXferMode] = useState(null); // "export" | "import" | null
+  const [xferText, setXferText] = useState("");
+  const openExport = () => {
+    setXferText(JSON.stringify(runs));
+    setXferMode("export");
+  };
+  const openImport = () => {
+    setXferText("");
+    setXferMode("import");
+  };
+  const xferRef = useRef(null);
+  const copyXfer = async () => {
+    let ok = false;
+    try {
+      await navigator.clipboard.writeText(xferText);
+      ok = true;
+    } catch (_) {
+      // サンドボックス環境向けフォールバック（execCommand方式）
+      try {
+        const ta = xferRef.current;
+        if (ta) {
+          ta.focus();
+          ta.select();
+          ta.setSelectionRange(0, ta.value.length);
+          ok = document.execCommand("copy");
+        }
+      } catch (_) {
+        ok = false;
+      }
+    }
+    setMsg(ok ? "クリップボードにコピーしました" : "自動コピー不可の環境です。テキストを長押し（右クリック）で全選択→コピーしてください");
+    setTimeout(() => setMsg(""), 4000);
+  };
+  const downloadXfer = () => {
+    try {
+      const blob = new Blob([xferText], {
+        type: "application/json"
+      });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `runlog-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+    } catch (_) {
+      setMsg("この環境ではファイル保存できません。コピーをお使いください");
+      setTimeout(() => setMsg(""), 3000);
+    }
+  };
+  const [pendingImport, setPendingImport] = useState(null);
+  const applyImportText = text => {
+    try {
+      const data = JSON.parse(text);
+      if (!Array.isArray(data) || data.length === 0) throw new Error();
+      setPendingImport(data); // モーダル内で確認表示
+    } catch (_) {
+      setMsg("JSONの読み込みに失敗しました。内容を確認してください");
+      setTimeout(() => setMsg(""), 3000);
+    }
+  };
+  const confirmImport = () => {
+    save(migrate(pendingImport));
+    setPendingImport(null);
+    setXferMode(null);
+    setMsg(`${pendingImport.length}件のデータを取り込みました`);
+    setTimeout(() => setMsg(""), 3000);
   };
   const importRef = useRef(null);
   const importJson = file => {
     const rd = new FileReader();
-    rd.onload = () => {
-      try {
-        const data = JSON.parse(rd.result);
-        if (!Array.isArray(data)) throw new Error();
-        if (window.confirm(`${data.length}件のデータで置き換えます。よろしいですか？`)) save(migrate(data));
-      } catch {
-        setMsg("JSONの読み込みに失敗しました");
-        setTimeout(() => setMsg(""), 3000);
-      }
-    };
+    rd.onload = () => applyImportText(rd.result);
     rd.readAsText(file);
   };
   const [keyEdit, setKeyEdit] = useState(false);
@@ -7094,10 +7144,10 @@ function RunningLog() {
       gap: 6
     }
   }, /*#__PURE__*/React.createElement("button", {
-    onClick: exportJson,
+    onClick: openExport,
     style: hdrBtn
   }, "書き出し"), /*#__PURE__*/React.createElement("button", {
-    onClick: () => importRef.current?.click(),
+    onClick: openImport,
     style: hdrBtn
   }, "読み込み"), /*#__PURE__*/React.createElement("button", {
     onClick: () => {
@@ -7203,7 +7253,165 @@ function RunningLog() {
       fontWeight: 700,
       cursor: "pointer"
     }
-  }, "保存")))), keyEdit && /*#__PURE__*/React.createElement("div", {
+  }, "保存")))), xferMode && /*#__PURE__*/React.createElement("div", {
+    onClick: () => {
+      setXferMode(null);
+      setPendingImport(null);
+    },
+    style: {
+      position: "fixed",
+      inset: 0,
+      background: "rgba(0,0,0,0.45)",
+      zIndex: 100,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 20
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    onClick: e => e.stopPropagation(),
+    style: {
+      background: "#FFFFFF",
+      borderRadius: 12,
+      padding: 20,
+      width: "100%",
+      maxWidth: 520
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 16,
+      fontWeight: 800,
+      marginBottom: 10,
+      color: C.ink
+    }
+  }, xferMode === "export" ? "データの書き出し" : "データの読み込み"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: C.sub,
+      marginBottom: 8,
+      lineHeight: 1.6
+    }
+  }, xferMode === "export" ? "下のテキスト（全記録データ）をコピーし、もう一方のアプリの「読み込み」に貼り付けてください。" : "書き出したテキストを貼り付けるか、JSONファイルを選択してください。既存データは置き換えられます。"), /*#__PURE__*/React.createElement("textarea", {
+    ref: xferRef,
+    value: xferText,
+    readOnly: xferMode === "export",
+    onChange: e => setXferText(e.target.value),
+    onFocus: e => xferMode === "export" && e.target.select(),
+    placeholder: xferMode === "import" ? "ここにJSONを貼り付け" : "",
+    style: {
+      width: "100%",
+      minHeight: 160,
+      border: `1px solid ${C.line}`,
+      borderRadius: 8,
+      padding: 10,
+      fontSize: 12,
+      fontFamily: "monospace",
+      boxSizing: "border-box",
+      resize: "vertical",
+      background: "#FFFFFF",
+      color: "#1A2B3C"
+    }
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      justifyContent: "flex-end",
+      marginTop: 12,
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      setXferMode(null);
+      setPendingImport(null);
+    },
+    style: {
+      background: "transparent",
+      color: C.sub,
+      border: `1px solid ${C.line}`,
+      borderRadius: 8,
+      padding: "10px 18px",
+      fontSize: 15,
+      cursor: "pointer"
+    }
+  }, "閉じる"), xferMode === "export" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
+    onClick: downloadXfer,
+    style: {
+      background: "transparent",
+      color: C.accent,
+      border: `1px solid ${C.accent}`,
+      borderRadius: 8,
+      padding: "10px 18px",
+      fontSize: 15,
+      fontWeight: 700,
+      cursor: "pointer"
+    }
+  }, "ファイル保存"), /*#__PURE__*/React.createElement("button", {
+    onClick: copyXfer,
+    style: {
+      background: C.accent,
+      color: "#fff",
+      border: "none",
+      borderRadius: 8,
+      padding: "10px 22px",
+      fontSize: 15,
+      fontWeight: 700,
+      cursor: "pointer"
+    }
+  }, "コピー")), xferMode === "import" && !pendingImport && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
+    onClick: () => importRef.current?.click(),
+    style: {
+      background: "transparent",
+      color: C.accent,
+      border: `1px solid ${C.accent}`,
+      borderRadius: 8,
+      padding: "10px 18px",
+      fontSize: 15,
+      fontWeight: 700,
+      cursor: "pointer"
+    }
+  }, "ファイル選択"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => applyImportText(xferText),
+    style: {
+      background: C.accent,
+      color: "#fff",
+      border: "none",
+      borderRadius: 8,
+      padding: "10px 22px",
+      fontSize: 15,
+      fontWeight: 700,
+      cursor: "pointer"
+    }
+  }, "取り込む")), xferMode === "import" && pendingImport && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
+    style: {
+      alignSelf: "center",
+      fontSize: 14,
+      fontWeight: 700,
+      color: C.ink
+    }
+  }, pendingImport.length, "件で既存データを置き換えます。よろしいですか？"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setPendingImport(null),
+    style: {
+      background: "transparent",
+      color: C.sub,
+      border: `1px solid ${C.line}`,
+      borderRadius: 8,
+      padding: "10px 18px",
+      fontSize: 15,
+      cursor: "pointer"
+    }
+  }, "戻る"), /*#__PURE__*/React.createElement("button", {
+    onClick: confirmImport,
+    style: {
+      background: C.accent,
+      color: "#fff",
+      border: "none",
+      borderRadius: 8,
+      padding: "10px 22px",
+      fontSize: 15,
+      fontWeight: 700,
+      cursor: "pointer"
+    }
+  }, "実行"))))), keyEdit && /*#__PURE__*/React.createElement("div", {
     onClick: () => setKeyEdit(false),
     style: {
       position: "fixed",
@@ -7308,7 +7516,18 @@ function RunningLog() {
       borderBottom: tab === k ? `3px solid ${C.accent}` : "3px solid transparent",
       marginBottom: -2
     }
-  }, label))), msg && /*#__PURE__*/React.createElement("div", {
+  }, label))), !storageOk && /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "#FFF4E5",
+      color: "#8A5300",
+      border: "1px solid #E8C48A",
+      padding: "10px 14px",
+      borderRadius: 8,
+      marginBottom: 12,
+      fontSize: 14,
+      lineHeight: 1.6
+    }
+  }, "⚠ この環境では記録の保存ができません（未公開のartifactでは永続ストレージが無効です）。入力したデータは画面を閉じると消えます。継続利用にはindex.html版（GitHub Pages）をお使いください。"), msg && /*#__PURE__*/React.createElement("div", {
     style: {
       background: C.accentSoft,
       color: C.accent,
