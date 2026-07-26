@@ -344,10 +344,22 @@ const {
 
 // ---- 定数 ----
 const SUB4_PACE_SEC = 341; // 5'41"/km
-const M_PACE_SEC = 327; // 5'27"/km
 const RUN_TYPES = ["ジョグ", "リカバリー走", "ビルドアップ走", "テンポ走", "Mペース走", "ロング走", "インターバル", "レース", "その他"];
+const TYPE_COLORS = {
+  "ジョグ": "#4C8FD1",
+  "リカバリー走": "#7FB88F",
+  "ビルドアップ走": "#E0A93E",
+  "テンポ走": "#D97A5F",
+  "Mペース走": "#C0574F",
+  "ロング走": "#7C5CBF",
+  "インターバル": "#3E9E8F",
+  "レース": "#B0223A",
+  "その他": "#9AA5B1"
+};
 const STORAGE_KEY = "running-log-v1";
 const RACE_KEY = "running-log-race";
+const TARGET_KEY = "running-log-target";
+const STRENGTH_KEY = "running-log-strength";
 const storeGet = async k => localStorage.getItem(k);
 const storeSet = async (k, v) => {
   try {
@@ -358,6 +370,26 @@ const storeSet = async (k, v) => {
   }
 };
 const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
+const STRENGTH_DAYS = [1, 3, 5]; // 月・水・金
+const EXERCISES = [{
+  key: "squat",
+  label: "③片脚スクワット"
+}, {
+  key: "hipLift",
+  label: "④ヒップリフト"
+}, {
+  key: "sideRaise",
+  label: "⑥サイドレイズ"
+}];
+const emptyStrengthRec = () => ({
+  squat: false,
+  squatSets: 1,
+  hipLift: false,
+  hipLiftSets: 1,
+  sideRaise: false,
+  sideRaiseSets: 1
+});
+const strengthDoneCount = r => !r ? 0 : EXERCISES.filter(e => r[e.key]).length;
 const C = {
   bg: "#EDF3F9",
   ink: "#1A2B3C",
@@ -6581,26 +6613,61 @@ function parseLapTable(text) {
     const tm = (lines[i + 1] || "").match(/^(\d{1,2}):(\d{2}):(\d{2})$/);
     const pm = (lines[i + 2] || "").match(/^(\d{1,2})['’](\d{2})["”]?\s*\/km$/);
     if (!tm || !pm) continue;
-    const hr = /^\d{2,3}$/.test(lines[i + 3] || "") ? +lines[i + 3] : null;
+    let j = i + 3;
+    let hr = null,
+      gct = null,
+      cadence = null,
+      m2;
+    // 平均心拍数（単位なし整数・40-220）
+    if (/^\d{2,3}$/.test(lines[j] || "") && +lines[j] <= 220) {
+      hr = +lines[j];
+      j++;
+    }
+    // 接地時間（ms付き、または単位なし150-400の範囲）
+    if (m2 = (lines[j] || "").match(/^(\d{2,3})\s*ms$/i)) {
+      gct = +m2[1];
+      j++;
+    } else if (/^\d{3}$/.test(lines[j] || "") && +lines[j] >= 150 && +lines[j] <= 400) {
+      gct = +lines[j];
+      j++;
+    }
+    // 平均ピッチ（spm付き、または単位なし130-220の範囲）
+    if (m2 = (lines[j] || "").match(/^(\d{2,3})\s*spm$/i)) {
+      cadence = +m2[1];
+      j++;
+    } else if (/^\d{2,3}$/.test(lines[j] || "") && +lines[j] >= 130 && +lines[j] <= 220) {
+      cadence = +lines[j];
+      j++;
+    }
     laps.push({
       dist: parseFloat(dm[1]),
       sec: +tm[1] * 3600 + +tm[2] * 60 + +tm[3],
       pace: +pm[1] * 60 + +pm[2],
-      hr
+      hr,
+      gct,
+      cadence
     });
-    i += 3;
+    i = j - 1;
   }
   if (laps.length === 0) return null;
   const distance = laps.reduce((s, l) => s + l.dist, 0);
   const duration = laps.reduce((s, l) => s + l.sec, 0);
+  const wavg = key => {
+    const xs = laps.filter(l => l[key]);
+    return xs.length ? Math.round(xs.reduce((s, l) => s + l[key] * l.dist, 0) / xs.reduce((s, l) => s + l.dist, 0)) : null;
+  };
+  const avgHr = wavg("hr");
   const hrLaps = laps.filter(l => l.hr);
-  const avgHr = hrLaps.length ? Math.round(hrLaps.reduce((s, l) => s + l.hr * l.dist, 0) / hrLaps.reduce((s, l) => s + l.dist, 0)) : null;
   const maxHr = hrLaps.length ? Math.max(...hrLaps.map(l => l.hr)) : null;
+  const avgGct = wavg("gct");
+  const avgCadence = wavg("cadence");
   return {
     distance: +distance.toFixed(2),
     duration,
     avgHr,
     maxHr,
+    avgGct,
+    avgCadence,
     laps
   };
 }
@@ -6614,6 +6681,10 @@ function parseFreeText(text) {
   if (m) r.pace = +m[1] * 60 + +m[2];
   m = text.match(/(?:平均心拍|心拍|HR)[^\d]{0,10}(\d{2,3})/i);
   if (m) r.avgHr = +m[1];
+  m = text.match(/(?:平均接地時間|接地時間)[^\d]{0,10}(\d{2,4})/i);
+  if (m) r.avgGct = +m[1];
+  m = text.match(/(?:平均ピッチ|ピッチ|ケイデンス)[^\d]{0,10}(\d{2,3})/i);
+  if (m) r.avgCadence = +m[1];
   return r;
 }
 function parseMeta(text) {
@@ -6641,6 +6712,8 @@ const emptyForm = () => ({
   duration: "",
   avgHr: "",
   maxHr: "",
+  avgGct: "",
+  avgCadence: "",
   memo: ""
 });
 function RunningLog() {
@@ -6656,6 +6729,10 @@ function RunningLog() {
     name: "",
     date: ""
   });
+  const [target, setTarget] = useState({
+    paceSec: 327
+  }); // 5'27"/km デフォルト
+  const [strength, setStrength] = useState({}); // { "YYYY-MM-DD": {squat,squatSets,hipLift,hipLiftSets,sideRaise,sideRaiseSets} }
   const [storageOk, setStorageOk] = useState(true);
   const [imgBusy, setImgBusy] = useState(false);
   const [imgPreview, setImgPreview] = useState(null);
@@ -6683,6 +6760,18 @@ function RunningLog() {
       if (rc) {
         try {
           setRace(JSON.parse(rc));
+        } catch (_) {}
+      }
+      const tc = await storeGet(TARGET_KEY);
+      if (tc) {
+        try {
+          setTarget(JSON.parse(tc));
+        } catch (_) {}
+      }
+      const sc = await storeGet(STRENGTH_KEY);
+      if (sc) {
+        try {
+          setStrength(JSON.parse(sc));
         } catch (_) {}
       }
       // 保存機能が実際に使えるか検査（未公開artifactでは失敗する）
@@ -6722,6 +6811,50 @@ function RunningLog() {
     await storeSet(RACE_KEY, JSON.stringify(nextRace));
     setRaceEdit(false);
   };
+  const [targetEdit, setTargetEdit] = useState(false);
+  const [targetForm, setTargetForm] = useState("5:27");
+  const openTargetEdit = () => {
+    setTargetForm(`${Math.floor(target.paceSec / 60)}:${pad(target.paceSec % 60)}`);
+    setTargetEdit(true);
+  };
+  const saveTarget = async () => {
+    const parts = targetForm.split(":").map(Number);
+    const sec = parts.length === 2 && !parts.some(isNaN) ? parts[0] * 60 + parts[1] : 0;
+    if (!sec || sec < 180 || sec > 900) {
+      setMsg("ペースを m:ss 形式で入力してください（例 5:27）");
+      setTimeout(() => setMsg(""), 3000);
+      return;
+    }
+    const nextTarget = {
+      paceSec: sec
+    };
+    setTarget(nextTarget);
+    await storeSet(TARGET_KEY, JSON.stringify(nextTarget));
+    setTargetEdit(false);
+  };
+
+  // ---- 筋トレ記録 ----
+  const saveStrength = async next => {
+    setStrength(next);
+    await storeSet(STRENGTH_KEY, JSON.stringify(next));
+  };
+  const updateStrength = (date, patch) => {
+    const cur = strength[date] || emptyStrengthRec();
+    saveStrength({
+      ...strength,
+      [date]: {
+        ...cur,
+        ...patch
+      }
+    });
+  };
+  const strengthStatusColor = date => {
+    const r = strength[date];
+    const n = strengthDoneCount(r);
+    if (n === 3) return C.ok;
+    if (n > 0) return "#D6A72E";
+    return "#C94F4F";
+  };
 
   // ---- AI分析（固定の小さなコンテキストで毎回独立に呼び出し：トークン累積なし） ----
   const [aiBusyId, setAiBusyId] = useState(null);
@@ -6735,9 +6868,19 @@ function RunningLog() {
     setAiBusyId(run.id);
     try {
       const idx = base.findIndex(r => r.id === run.id);
-      const recent = base.slice(Math.max(0, idx - 5), idx).map(r => `${r.date} ${r.type} ${r.distance}km ${fmtPace(r.pace)}/km HR${r.avgHr ?? "-"}`).join("\n");
-      const lapText = (run.laps || []).map((l, i) => `${i + 1}: ${l.dist}km ${fmtPace(l.pace)}/km HR${l.hr ?? "-"}`).join("\n");
-      const profile = `ランナー: 56歳男性。${race.name && race.date ? `${race.name}(${race.date})` : "目標レース"}でサブ4(目標3:50)。週4回練習(火ポイント/木ジョグ+流し/土ロング/日リカバリー)。練習ゾーン: 回復6'40-7'00(HR<130)、イージー5'50-6'10(HR140-150)、Mペース5'25(HR160-165)、AT5'20(HR163-167)、T5'05-5'10(HR170-175)、RCT4'45-4'50(HR175-180)。最大心拍193。ロング走は心拍155以下厳守。過去レース: 松江4:26(35km失速)、姫路4:50(26km失速・脱水主因)。`;
+      const recent = base.slice(Math.max(0, idx - 5), idx).map(r => `${r.date} ${r.type} ${r.distance}km ${fmtPace(r.pace)}/km HR${r.avgHr ?? "-"} 接地${r.avgGct ?? "-"}ms ピッチ${r.avgCadence ?? "-"}spm`).join("\n");
+      const lapText = (run.laps || []).map((l, i) => `${i + 1}: ${l.dist}km ${fmtPace(l.pace)}/km HR${l.hr ?? "-"} 接地${l.gct ?? "-"}ms ピッチ${l.cadence ?? "-"}spm`).join("\n");
+      const profile = `ランナー: フルマラソン目標グロス3時間58分以内(${race.name && race.date ? `目標レース: ${race.name}(${race.date})` : "目標レース未設定"})。Coros上腕型心拍計使用。
+確定レーススケジュール: 2026/10/25にしのみや武庫川ハーフ(レース慣れ目的)、2026/11/22福知山マラソン(サブ4初達成狙い・エントリー済み)、2026/12/6松江城マラソン(検討中)、2027/3/14びわ湖マラソン(確定)。
+ペース基準: 回復ジョグ7'00-7'30/km(HR130以下)、Eペース(ジョグ)6'10-6'20/km(HR150以下)、Mペース5'30/km(HR160-165、涼しい日)、ATペース5'20/km(HR163-167、実走時5'15-5'20)、Tペース(テンポ走)5'05-5'10/km(HR170-175)、RCTペース4'48/km(HR179、ラボ測定)。
+気温別ロング走ペース補正: 18度以下6'10-6'20、18-22度6'20-6'30、22-26度6'30-6'40、26-30度6'45-7'00、30-33度7'10-7'30(/km)。
+週間構成: 月完全休養/火ポイント練習(テンポ走・Mペース走を隔週交互)/水休養/木ジョグ10-12km+流し3本/金完全休養/土ロング走(7-8月は朝夕分割LSD)/日回復ジョグ5km。心拍アラート155(6月)→158(7月)→160(8月以降)。
+ロング走進捗: 最長28km(7/4)。目標30km(8月)→32km(9月)→35km(10月)。
+補給戦略: ジェルはアミノバイタル(筋肉保護・序盤〜中盤)とMag-on(電解質・中盤〜後半)を交互。カフェイン入りは30km以降・本番2週間前は控える。給水はハイドレ2本(スポドリ+水)を20分毎2-3口。補給空白は6km以内に均等化(姫路城の7.1km空白が失速原因)。
+シューズ: MagicSpeed4(インターバル・ビルドアップ・ハーフ用)、Noosa Tri16(テンポ走・Mペース走用)、GEL-NIMBUS28(回復ジョグ用)、SuperBlast2(寿命超え引退推奨)、SuperBlast3(8月購入予定・ロング走&福知山本番用)。
+過去レース: 福井足羽川ハーフ1:49:09(5'10/km)。松江城マラソン4:26:55(35km失速)。姫路城マラソン(26km失速、前日自転車・気温20度・下り坂で攻めすぎ、エネルギー枯渇+補給空白が主因)。失速防止策: 下り坂で攻めない、前日完全休養、1km目を遅く入る。
+ASICSラボ測定(4/5): 体脂肪17.5%(目標15%)、基礎代謝1415kcal、膝屈曲筋力左3/右4(10段階、ハム・臀筋が弱点)、前後バランス46-47%(標準50-65%)、上下動やや大。
+筋トレ(ラボ指定・月水金オフ日に各1-2セット): ③片脚スクワット・④ヒップリフト・⑥サイドレイズ(他に⑩腹筋・⑫背筋・⑭腕立て伏せも推奨)。`;
       const response = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
@@ -6748,10 +6891,21 @@ function RunningLog() {
         },
         body: JSON.stringify({
           model: "claude-sonnet-4-6",
-          max_tokens: 1000,
+          max_tokens: 1800,
           messages: [{
             role: "user",
-            content: `${profile}\n\n直近の練習:\n${recent || "なし"}\n\n今回の練習:\n${run.date} ${run.type} ${run.distance}km ${fmtDur(run.duration)} ${fmtPace(run.pace)}/km 平均心拍${run.avgHr ?? "-"} 最大${run.maxHr ?? "-"}\nラップ:\n${lapText || "なし"}\n\nこの練習を分析し、評価と次へのアドバイスを日本語400字以内で簡潔に。表やMarkdown記法は使わずプレーンテキストで。`
+            content: `${profile}\n\n直近の練習:\n${recent || "なし"}\n\n今回の練習:\n${run.date} ${run.type} ${run.distance}km ${fmtDur(run.duration)} ${fmtPace(run.pace)}/km 平均心拍${run.avgHr ?? "-"} 最大${run.maxHr ?? "-"} 平均接地時間${run.avgGct ?? "-"}ms 平均ピッチ${run.avgCadence ?? "-"}spm\nラップ:\n${lapText || "なし"}\n\n上記プロフィール（ペース基準・レーススケジュール・補給戦略・シューズ構成・筋トレ内容・過去レースデータ）を必ず踏まえたうえで、この練習を以下の形式で日本語で分析・アドバイスしてください。結論（総合評価）を最初に一言で述べてから、各項目に進んでください。数値は具体的に。表はMarkdownのパイプ形式（| |）で見やすく作成してください。画像の添付はないため「グラフの読み取り」の項目は省略してください。
+
+【分析の形式】
+・結論（一言で総合評価）
+・基本データ（距離・気温・平均心拍・シューズ を表で）
+・目標との比較表（目標値・結果・評価 を表で）
+・区間別分析（区間・ペース・心拍・評価 を表で、ラップがある場合）
+・過去データとの比較（直近の練習や同条件の過去記録と比較）
+・良かった点・課題
+・次回練習へのアドバイス（具体的な数値目標）
+
+全体で800字程度を目安に簡潔にまとめてください。`
           }]
         })
       });
@@ -6784,6 +6938,8 @@ function RunningLog() {
       duration: p.duration ? fmtDur(p.duration) : f.duration,
       avgHr: p.avgHr ?? f.avgHr,
       maxHr: p.maxHr ?? f.maxHr,
+      avgGct: p.avgGct ?? f.avgGct,
+      avgCadence: p.avgCadence ?? f.avgCadence,
       memo: (meta.temp ? `気温${meta.temp}度。` : "") + (lap ? `ラップ${lap.laps.length}本を解析済み` : "")
     }));
     setMsg(lap ? `ラップ表を解析しました（${lap.laps.length}本・${p.distance}km）` : "テキストを解析しました。内容を確認してください");
@@ -6876,6 +7032,8 @@ function RunningLog() {
       pace: durSec / dist,
       avgHr: form.avgHr ? +form.avgHr : null,
       maxHr: form.maxHr ? +form.maxHr : null,
+      avgGct: form.avgGct ? +form.avgGct : null,
+      avgCadence: form.avgCadence ? +form.avgCadence : null,
       memo: form.memo || "",
       laps: pendingLaps || prev?.laps || null
     };
@@ -6905,6 +7063,8 @@ function RunningLog() {
       duration: fmtDur(r.duration),
       avgHr: r.avgHr ?? "",
       maxHr: r.maxHr ?? "",
+      avgGct: r.avgGct ?? "",
+      avgCadence: r.avgCadence ?? "",
       memo: r.memo
     });
     setTab("input");
@@ -6921,15 +7081,39 @@ function RunningLog() {
   }, [runs]);
   const monthKm = runs.filter(r => r.date.startsWith(`${calY}-${pad(calM + 1)}`)).reduce((s, r) => s + r.distance, 0);
   const yearKm = runs.filter(r => r.date.startsWith(`${calY}-`)).reduce((s, r) => s + r.distance, 0);
-  const [period, setPeriod] = useState("week"); // week | month | year
 
-  // 期間集計（ペース=距離加重平均、心拍=距離加重平均、距離=合計、回数）
+  // 筋トレ月間実施率（当月内の月・水・金のうち、本日以前の日を対象）
+  const strengthMonthStat = useMemo(() => {
+    let total = 0,
+      done = 0;
+    const daysInMonth = new Date(calY, calM + 1, 0).getDate();
+    const todayKey = ymd(today);
+    for (let d = 1; d <= daysInMonth; d++) {
+      const dt = new Date(calY, calM, d);
+      if (!STRENGTH_DAYS.includes(dt.getDay())) continue;
+      const key = ymd(dt);
+      if (key > todayKey) continue;
+      total += 1;
+      if (strengthDoneCount(strength[key]) === 3) done += 1;
+    }
+    return {
+      total,
+      done,
+      pct: total ? Math.round(done / total * 100) : 0
+    };
+  }, [calY, calM, strength]);
+  const [period, setPeriod] = useState("week"); // week | month | year
+  const [typeFilter, setTypeFilter] = useState("all"); // ペース・心拍グラフの対象種別
+  const [compMetric, setCompMetric] = useState("distance"); // distance | duration
+
+  const periodKeyOf = r => period === "year" ? r.date.slice(0, 4) : period === "month" ? r.date.slice(0, 7) : mondayOf(r.date);
+  const periodLabelOf = k => period === "year" ? `${k}年` : period === "month" ? `${+k.slice(5)}月` : `${+k.slice(5, 7)}/${+k.slice(8, 10)}〜`;
+
+  // 期間集計（全種別。走行距離・走行回数グラフ用）
   const chartData = useMemo(() => {
-    const keyOf = r => period === "year" ? r.date.slice(0, 4) : period === "month" ? r.date.slice(0, 7) : mondayOf(r.date);
-    const labelOf = k => period === "year" ? `${k}年` : period === "month" ? `${+k.slice(5)}月` : `${+k.slice(5, 7)}/${+k.slice(8, 10)}〜`;
     const m = new Map();
     for (const r of runs) {
-      const k = keyOf(r);
+      const k = periodKeyOf(r);
       if (!m.has(k)) m.set(k, {
         dist: 0,
         dur: 0,
@@ -6947,13 +7131,63 @@ function RunningLog() {
       }
     }
     return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([k, a]) => ({
-      d: labelOf(k),
+      d: periodLabelOf(k),
       pace: Math.round(a.dur / a.dist),
       dist: +a.dist.toFixed(1),
       hr: a.hrDist ? Math.round(a.hrKm / a.hrDist) : null,
       n: a.n
     }));
   }, [runs, period]);
+
+  // 種別フィルタ済み集計（平均ペース・平均心拍グラフ用）
+  const chartDataFiltered = useMemo(() => {
+    const filtered = typeFilter === "all" ? runs : runs.filter(r => r.type === typeFilter);
+    const m = new Map();
+    for (const r of filtered) {
+      const k = periodKeyOf(r);
+      if (!m.has(k)) m.set(k, {
+        dist: 0,
+        dur: 0,
+        hrKm: 0,
+        hrDist: 0,
+        n: 0
+      });
+      const a = m.get(k);
+      a.dist += r.distance;
+      a.dur += r.duration;
+      a.n += 1;
+      if (r.avgHr) {
+        a.hrKm += r.avgHr * r.distance;
+        a.hrDist += r.distance;
+      }
+    }
+    return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([k, a]) => ({
+      d: periodLabelOf(k),
+      pace: Math.round(a.dur / a.dist),
+      hr: a.hrDist ? Math.round(a.hrKm / a.hrDist) : null,
+      n: a.n
+    }));
+  }, [runs, period, typeFilter]);
+
+  // 練習種別の構成比（期間ごとに合計100%・距離 or 時間基準）
+  const compositionData = useMemo(() => {
+    const m = new Map();
+    for (const r of runs) {
+      const k = periodKeyOf(r);
+      if (!m.has(k)) m.set(k, {});
+      const bucket = m.get(k);
+      const val = compMetric === "distance" ? r.distance : r.duration;
+      bucket[r.type] = (bucket[r.type] || 0) + val;
+    }
+    return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([k, bucket]) => {
+      const total = Object.values(bucket).reduce((s, v) => s + v, 0) || 1;
+      const row = {
+        d: periodLabelOf(k)
+      };
+      for (const t of RUN_TYPES) row[t] = bucket[t] ? +(bucket[t] / total * 100).toFixed(1) : 0;
+      return row;
+    });
+  }, [runs, period, compMetric]);
 
   // ---- カレンダー生成 ----
   const calCells = useMemo(() => {
@@ -7137,7 +7371,20 @@ function RunningLog() {
       opacity: 0.85,
       cursor: "pointer"
     }
-  }, race.name && race.date ? `${race.name}（${+race.date.slice(5, 7)}/${+race.date.slice(8, 10)}）まで ${daysToRace > 0 ? `${daysToRace}日` : "—"} ✎` : "レース未設定（ここをクリックして入力）✎", " ・ 目標 3:50（Mペース 5'27\"/km）"), /*#__PURE__*/React.createElement("span", {
+  }, race.name && race.date ? `${race.name}（${+race.date.slice(5, 7)}/${+race.date.slice(8, 10)}）まで ${daysToRace > 0 ? `${daysToRace}日` : "—"} ✎` : "レース未設定（ここをクリックして入力）✎"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 14,
+      opacity: 0.85
+    }
+  }, "・"), /*#__PURE__*/React.createElement("span", {
+    onClick: openTargetEdit,
+    title: "クリックしてMペースを変更",
+    style: {
+      fontSize: 14,
+      opacity: 0.85,
+      cursor: "pointer"
+    }
+  }, `目標 ${fmtDur(Math.round(target.paceSec * 42.195))}（Mペース ${fmtPace(target.paceSec)}/km）✎`), /*#__PURE__*/React.createElement("span", {
     style: {
       marginLeft: "auto",
       display: "flex",
@@ -7243,6 +7490,157 @@ function RunningLog() {
     }
   }, "キャンセル"), /*#__PURE__*/React.createElement("button", {
     onClick: saveRace,
+    style: {
+      background: C.accent,
+      color: "#fff",
+      border: "none",
+      borderRadius: 8,
+      padding: "10px 22px",
+      fontSize: 15,
+      fontWeight: 700,
+      cursor: "pointer"
+    }
+  }, "保存")))), targetEdit && /*#__PURE__*/React.createElement("div", {
+    onClick: () => setTargetEdit(false),
+    style: {
+      position: "fixed",
+      inset: 0,
+      background: "rgba(0,0,0,0.45)",
+      zIndex: 100,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 20
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    onClick: e => e.stopPropagation(),
+    style: {
+      background: "#FFFFFF",
+      borderRadius: 12,
+      padding: 20,
+      width: "100%",
+      maxWidth: 380
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 16,
+      fontWeight: 800,
+      marginBottom: 14,
+      color: C.ink
+    }
+  }, "目標設定"), /*#__PURE__*/React.createElement("label", {
+    style: {
+      fontSize: 14,
+      color: C.sub,
+      display: "block",
+      marginBottom: 10
+    }
+  }, "Mペース（m:ss / km）", /*#__PURE__*/React.createElement("input", {
+    value: targetForm,
+    onChange: e => setTargetForm(e.target.value),
+    placeholder: "5:27",
+    style: inp
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      color: C.ink,
+      marginBottom: 16,
+      background: C.bg,
+      borderRadius: 8,
+      padding: "10px 12px"
+    }
+  }, "フルマラソン ゴールタイム目安：", /*#__PURE__*/React.createElement("b", {
+    style: {
+      fontVariantNumeric: "tabular-nums"
+    }
+  }, (() => {
+    const parts = targetForm.split(":").map(Number);
+    const sec = parts.length === 2 && !parts.some(isNaN) ? parts[0] * 60 + parts[1] : 0;
+    return sec ? fmtDur(Math.round(sec * 42.195)) : "–";
+  })())), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      justifyContent: "flex-end"
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => setTargetEdit(false),
+    style: {
+      background: "transparent",
+      color: C.sub,
+      border: `1px solid ${C.line}`,
+      borderRadius: 8,
+      padding: "10px 18px",
+      fontSize: 15,
+      cursor: "pointer"
+    }
+  }, "キャンセル"), /*#__PURE__*/React.createElement("button", {
+    onClick: saveTarget,
+    style: {
+      background: C.accent,
+      color: "#fff",
+      border: "none",
+      borderRadius: 8,
+      padding: "10px 22px",
+      fontSize: 15,
+      fontWeight: 700,
+      cursor: "pointer"
+    }
+  }, "保存")))), keyEdit && /*#__PURE__*/React.createElement("div", {
+    onClick: () => setKeyEdit(false),
+    style: {
+      position: "fixed",
+      inset: 0,
+      background: "rgba(0,0,0,0.45)",
+      zIndex: 100,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 20
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    onClick: e => e.stopPropagation(),
+    style: {
+      background: "#FFFFFF",
+      borderRadius: 12,
+      padding: 20,
+      width: "100%",
+      maxWidth: 380
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 16,
+      fontWeight: 800,
+      marginBottom: 14,
+      color: C.ink
+    }
+  }, "Claude APIキー設定"), /*#__PURE__*/React.createElement("input", {
+    value: keyForm,
+    onChange: e => setKeyForm(e.target.value),
+    placeholder: "sk-ant-…（空欄で削除）",
+    style: {
+      ...inp,
+      marginBottom: 16
+    }
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      justifyContent: "flex-end"
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => setKeyEdit(false),
+    style: {
+      background: "transparent",
+      color: C.sub,
+      border: `1px solid ${C.line}`,
+      borderRadius: 8,
+      padding: "10px 18px",
+      fontSize: 15,
+      cursor: "pointer"
+    }
+  }, "キャンセル"), /*#__PURE__*/React.createElement("button", {
+    onClick: saveApiKey,
     style: {
       background: C.accent,
       color: "#fff",
@@ -7411,72 +7809,7 @@ function RunningLog() {
       fontWeight: 700,
       cursor: "pointer"
     }
-  }, "実行"))))), keyEdit && /*#__PURE__*/React.createElement("div", {
-    onClick: () => setKeyEdit(false),
-    style: {
-      position: "fixed",
-      inset: 0,
-      background: "rgba(0,0,0,0.45)",
-      zIndex: 100,
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      padding: 20
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    onClick: e => e.stopPropagation(),
-    style: {
-      background: "#FFFFFF",
-      borderRadius: 12,
-      padding: 20,
-      width: "100%",
-      maxWidth: 380
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 16,
-      fontWeight: 800,
-      marginBottom: 14,
-      color: C.ink
-    }
-  }, "Claude APIキー設定"), /*#__PURE__*/React.createElement("input", {
-    value: keyForm,
-    onChange: e => setKeyForm(e.target.value),
-    placeholder: "sk-ant-…（空欄で削除）",
-    style: {
-      ...inp,
-      marginBottom: 16
-    }
-  }), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 8,
-      justifyContent: "flex-end"
-    }
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: () => setKeyEdit(false),
-    style: {
-      background: "transparent",
-      color: C.sub,
-      border: `1px solid ${C.line}`,
-      borderRadius: 8,
-      padding: "10px 18px",
-      fontSize: 15,
-      cursor: "pointer"
-    }
-  }, "キャンセル"), /*#__PURE__*/React.createElement("button", {
-    onClick: saveApiKey,
-    style: {
-      background: C.accent,
-      color: "#fff",
-      border: "none",
-      borderRadius: 8,
-      padding: "10px 22px",
-      fontSize: 15,
-      fontWeight: 700,
-      cursor: "pointer"
-    }
-  }, "保存")))), /*#__PURE__*/React.createElement("div", {
+  }, "実行"))))), /*#__PURE__*/React.createElement("div", {
     style: {
       maxWidth: 900,
       margin: "0 auto",
@@ -7495,6 +7828,10 @@ function RunningLog() {
   }), /*#__PURE__*/React.createElement(Stat, {
     label: `年間走行距離（${calY}年）`,
     value: `${yearKm.toFixed(1)} km`
+  }), /*#__PURE__*/React.createElement(Stat, {
+    label: `筋トレ実施率（月・水・金）`,
+    value: `${strengthMonthStat.pct}%`,
+    sub: `${strengthMonthStat.total}回中${strengthMonthStat.done}回`
   })), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
@@ -7587,9 +7924,12 @@ function RunningLog() {
     const km = dayRuns.reduce((s, r) => s + r.distance, 0);
     const isSel = selDate === key;
     const isToday = key === ymd(today);
+    const isStrengthDay = STRENGTH_DAYS.includes(d.getDay());
+    const sRecCell = strength[key];
+    const clickable = ran || isStrengthDay;
     return /*#__PURE__*/React.createElement("div", {
       key: i,
-      onClick: () => ran && setSelDate(isSel ? null : key),
+      onClick: () => clickable && setSelDate(isSel ? null : key),
       style: {
         minHeight: 72,
         padding: "4px 4px 6px",
@@ -7597,10 +7937,22 @@ function RunningLog() {
         borderBottom: `1px solid ${C.line}`,
         borderRight: i % 7 < 6 ? `1px solid ${C.line}` : "none",
         background: isSel ? C.accentSoft : inMonth ? "#FFFFFF" : "#F5F8FB",
-        cursor: ran ? "pointer" : "default",
-        opacity: inMonth ? 1 : 0.45
+        cursor: clickable ? "pointer" : "default",
+        opacity: inMonth ? 1 : 0.45,
+        position: "relative"
       }
-    }, /*#__PURE__*/React.createElement("div", {
+    }, isStrengthDay && /*#__PURE__*/React.createElement("div", {
+      title: "筋トレ日",
+      style: {
+        position: "absolute",
+        top: 4,
+        right: 4,
+        width: 9,
+        height: 9,
+        borderRadius: "50%",
+        background: strengthStatusColor(key)
+      }
+    }), /*#__PURE__*/React.createElement("div", {
       style: {
         width: 24,
         height: 24,
@@ -7633,7 +7985,44 @@ function RunningLog() {
         lineHeight: 1.2
       }
     }, [...new Set(dayRuns.map(r => r.type))].join("・"))));
-  }))), selDate && selRuns.length > 0 && /*#__PURE__*/React.createElement("div", {
+  }))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 14,
+      justifyContent: "center",
+      marginTop: 10,
+      fontSize: 12,
+      color: C.sub,
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement("span", null, /*#__PURE__*/React.createElement("span", {
+    style: {
+      display: "inline-block",
+      width: 9,
+      height: 9,
+      borderRadius: "50%",
+      background: C.ok,
+      marginRight: 4
+    }
+  }), "筋トレ全種目完了"), /*#__PURE__*/React.createElement("span", null, /*#__PURE__*/React.createElement("span", {
+    style: {
+      display: "inline-block",
+      width: 9,
+      height: 9,
+      borderRadius: "50%",
+      background: "#D6A72E",
+      marginRight: 4
+    }
+  }), "一部のみ"), /*#__PURE__*/React.createElement("span", null, /*#__PURE__*/React.createElement("span", {
+    style: {
+      display: "inline-block",
+      width: 9,
+      height: 9,
+      borderRadius: "50%",
+      background: "#C94F4F",
+      marginRight: 4
+    }
+  }), "未実施")), selDate && (selRuns.length > 0 || STRENGTH_DAYS.includes(new Date(selDate + "T00:00:00").getDay())) && /*#__PURE__*/React.createElement("div", {
     style: {
       marginTop: 16
     }
@@ -7644,7 +8033,73 @@ function RunningLog() {
       marginBottom: 8,
       color: C.accent
     }
-  }, +selDate.slice(5, 7), "月", +selDate.slice(8, 10), "日の記録"), selRuns.map(r => {
+  }, +selDate.slice(5, 7), "月", +selDate.slice(8, 10), "日の記録"), STRENGTH_DAYS.includes(new Date(selDate + "T00:00:00").getDay()) && (() => {
+    const sRec = strength[selDate] || emptyStrengthRec();
+    return /*#__PURE__*/React.createElement("div", {
+      style: {
+        background: C.card,
+        border: `1px solid ${C.line}`,
+        borderLeft: "4px solid #D6A72E",
+        borderRadius: 10,
+        padding: "14px 16px",
+        marginBottom: 10
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 15,
+        fontWeight: 700,
+        marginBottom: 10
+      }
+    }, "筋トレ記録（月・水・金）"), EXERCISES.map(ex => /*#__PURE__*/React.createElement("div", {
+      key: ex.key,
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        marginBottom: 8,
+        flexWrap: "wrap"
+      }
+    }, /*#__PURE__*/React.createElement("label", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        fontSize: 15,
+        cursor: "pointer",
+        minWidth: 160
+      }
+    }, /*#__PURE__*/React.createElement("input", {
+      type: "checkbox",
+      checked: !!sRec[ex.key],
+      onChange: e => updateStrength(selDate, {
+        [ex.key]: e.target.checked
+      }),
+      style: {
+        width: 18,
+        height: 18
+      }
+    }), ex.label), /*#__PURE__*/React.createElement("select", {
+      value: sRec[`${ex.key}Sets`],
+      onChange: e => updateStrength(selDate, {
+        [`${ex.key}Sets`]: +e.target.value
+      }),
+      style: {
+        ...inp,
+        width: 90,
+        marginTop: 0
+      }
+    }, /*#__PURE__*/React.createElement("option", {
+      value: 1
+    }, "1セット"), /*#__PURE__*/React.createElement("option", {
+      value: 2
+    }, "2セット")))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 13,
+        color: C.sub,
+        marginTop: 4
+      }
+    }, strengthDoneCount(sRec), "/3種目完了"));
+  })(), selRuns.map(r => {
     const diff = Math.round(r.pace - SUB4_PACE_SEC);
     return /*#__PURE__*/React.createElement("div", {
       key: r.id,
@@ -7698,7 +8153,17 @@ function RunningLog() {
         fontSize: 14,
         color: C.sub
       }
-    }, "♥ 平均", r.avgHr, r.maxHr ? ` / 最大${r.maxHr}` : ""), /*#__PURE__*/React.createElement("span", {
+    }, "♥ 平均", r.avgHr, r.maxHr ? ` / 最大${r.maxHr}` : ""), r.avgGct && /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 14,
+        color: C.sub
+      }
+    }, "接地 ", r.avgGct, "ms"), r.avgCadence && /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 14,
+        color: C.sub
+      }
+    }, "ピッチ ", r.avgCadence, "spm"), /*#__PURE__*/React.createElement("span", {
       style: {
         marginLeft: "auto",
         display: "flex",
@@ -7765,7 +8230,11 @@ function RunningLog() {
       style: th
     }, "ペース"), /*#__PURE__*/React.createElement("th", {
       style: th
-    }, "心拍"))), /*#__PURE__*/React.createElement("tbody", null, r.laps.map((l, i) => /*#__PURE__*/React.createElement("tr", {
+    }, "心拍"), /*#__PURE__*/React.createElement("th", {
+      style: th
+    }, "接地"), /*#__PURE__*/React.createElement("th", {
+      style: th
+    }, "ピッチ"))), /*#__PURE__*/React.createElement("tbody", null, r.laps.map((l, i) => /*#__PURE__*/React.createElement("tr", {
       key: i
     }, /*#__PURE__*/React.createElement("td", {
       style: td
@@ -7774,12 +8243,16 @@ function RunningLog() {
     }, l.dist.toFixed(2), "km"), /*#__PURE__*/React.createElement("td", {
       style: {
         ...td,
-        fontWeight: l.pace <= M_PACE_SEC ? 700 : 400,
-        color: l.pace <= M_PACE_SEC ? C.ok : C.ink
+        fontWeight: l.pace <= target.paceSec ? 700 : 400,
+        color: l.pace <= target.paceSec ? C.ok : C.ink
       }
     }, fmtPace(l.pace)), /*#__PURE__*/React.createElement("td", {
       style: td
-    }, l.hr ?? "–")))))));
+    }, l.hr ?? "–"), /*#__PURE__*/React.createElement("td", {
+      style: td
+    }, l.gct ?? "–"), /*#__PURE__*/React.createElement("td", {
+      style: td
+    }, l.cadence ?? "–")))))));
   })), !selDate && /*#__PURE__*/React.createElement("div", {
     style: {
       marginTop: 12,
@@ -7787,7 +8260,7 @@ function RunningLog() {
       color: C.sub,
       textAlign: "center"
     }
-  }, "○のついた日付をクリックすると、分析コメントを表示します")), tab === "input" && /*#__PURE__*/React.createElement("div", {
+  }, "○のついた日付や、右上にドットのある月・水・金をクリックすると、分析コメントや筋トレ記録を表示・入力できます")), tab === "input" && /*#__PURE__*/React.createElement("div", {
     style: {
       display: "grid",
       gap: 14
@@ -8002,6 +8475,32 @@ function RunningLog() {
     }),
     placeholder: "171",
     style: inp
+  })), /*#__PURE__*/React.createElement("label", {
+    style: {
+      fontSize: 14,
+      color: C.sub
+    }
+  }, "平均接地時間 (ms)", /*#__PURE__*/React.createElement("input", {
+    value: form.avgGct,
+    onChange: e => setForm({
+      ...form,
+      avgGct: e.target.value
+    }),
+    placeholder: "251",
+    style: inp
+  })), /*#__PURE__*/React.createElement("label", {
+    style: {
+      fontSize: 14,
+      color: C.sub
+    }
+  }, "平均ピッチ (spm)", /*#__PURE__*/React.createElement("input", {
+    value: form.avgCadence,
+    onChange: e => setForm({
+      ...form,
+      avgCadence: e.target.value
+    }),
+    placeholder: "170",
+    style: inp
   }))), pendingLaps && /*#__PURE__*/React.createElement("div", {
     style: {
       marginTop: 10,
@@ -8085,13 +8584,38 @@ function RunningLog() {
       background: period === k ? C.accent : "#FFFFFF",
       color: period === k ? "#fff" : C.sub
     }
-  }, label))), /*#__PURE__*/React.createElement(ChartCard, {
-    title: `平均ペースの推移（${period === "week" ? "週" : period === "month" ? "月" : "年"}ごとの距離加重平均・上ほど速い）`
+  }, label))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      justifyContent: "center",
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 14,
+      color: C.sub
+    }
+  }, "ペース・心拍の対象種別："), /*#__PURE__*/React.createElement("select", {
+    value: typeFilter,
+    onChange: e => setTypeFilter(e.target.value),
+    style: {
+      ...inp,
+      width: 160,
+      marginTop: 0
+    }
+  }, /*#__PURE__*/React.createElement("option", {
+    value: "all"
+  }, "全種別"), RUN_TYPES.map(t => /*#__PURE__*/React.createElement("option", {
+    key: t,
+    value: t
+  }, t)))), /*#__PURE__*/React.createElement(ChartCard, {
+    title: `平均ペースの推移（${period === "week" ? "週" : period === "month" ? "月" : "年"}ごとの距離加重平均・上ほど速い・${typeFilter === "all" ? "全種別" : typeFilter}）`
   }, /*#__PURE__*/React.createElement(ResponsiveContainer, {
     width: "100%",
     height: 260
   }, /*#__PURE__*/React.createElement(LineChart, {
-    data: chartData,
+    data: chartDataFiltered,
     margin: {
       top: 10,
       right: 16,
@@ -8122,11 +8646,11 @@ function RunningLog() {
       position: "insideBottomRight"
     }
   }), /*#__PURE__*/React.createElement(ReferenceLine, {
-    y: M_PACE_SEC,
+    y: target.paceSec,
     stroke: C.ok,
     strokeDasharray: "6 4",
     label: {
-      value: "Mペース 5'27",
+      value: "Mペース " + fmtPace(target.paceSec),
       fill: C.ok,
       fontSize: 13,
       position: "insideTopRight"
@@ -8138,14 +8662,15 @@ function RunningLog() {
     strokeWidth: 2,
     dot: {
       r: 3
-    }
+    },
+    connectNulls: true
   }))), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 13,
       color: C.sub,
       marginTop: 6
     }
-  }, "※ リカバリー走・ロング走も含む全記録。練習種別ごとの狙いペースが異なる点に注意")), /*#__PURE__*/React.createElement(ChartCard, {
+  }, typeFilter === "all" ? "※ 全種別の合算。練習種別ごとの狙いペースが異なる点に注意" : `※ ${typeFilter}のみを集計`)), /*#__PURE__*/React.createElement(ChartCard, {
     title: `${period === "week" ? "週間" : period === "month" ? "月間" : "年間"}走行距離`
   }, /*#__PURE__*/React.createElement(ResponsiveContainer, {
     width: "100%",
@@ -8174,12 +8699,12 @@ function RunningLog() {
     fill: C.accent,
     radius: [4, 4, 0, 0]
   })))), /*#__PURE__*/React.createElement(ChartCard, {
-    title: `平均心拍の推移（${period === "week" ? "週" : period === "month" ? "月" : "年"}ごとの距離加重平均）`
+    title: `平均心拍の推移（${period === "week" ? "週" : period === "month" ? "月" : "年"}ごとの距離加重平均・${typeFilter === "all" ? "全種別" : typeFilter}）`
   }, /*#__PURE__*/React.createElement(ResponsiveContainer, {
     width: "100%",
     height: 220
   }, /*#__PURE__*/React.createElement(LineChart, {
-    data: chartData.filter(d => d.hr),
+    data: chartDataFiltered.filter(d => d.hr),
     margin: {
       top: 10,
       right: 16,
@@ -8216,6 +8741,77 @@ function RunningLog() {
       r: 3
     }
   })))), /*#__PURE__*/React.createElement(ChartCard, {
+    title: `練習種別の構成比（${period === "week" ? "週" : period === "month" ? "月" : "年"}ごと・${compMetric === "distance" ? "距離" : "時間"}基準・合計100%）`
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 6,
+      justifyContent: "center",
+      marginBottom: 10
+    }
+  }, [["distance", "距離"], ["duration", "時間"]].map(([k, label]) => /*#__PURE__*/React.createElement("button", {
+    key: k,
+    onClick: () => setCompMetric(k),
+    style: {
+      padding: "5px 16px",
+      borderRadius: 16,
+      fontSize: 13,
+      fontWeight: 700,
+      cursor: "pointer",
+      border: `1px solid ${compMetric === k ? C.accent : C.line}`,
+      background: compMetric === k ? C.accent : "#FFFFFF",
+      color: compMetric === k ? "#fff" : C.sub
+    }
+  }, label))), /*#__PURE__*/React.createElement(ResponsiveContainer, {
+    width: "100%",
+    height: 260
+  }, /*#__PURE__*/React.createElement(BarChart, {
+    data: compositionData,
+    margin: {
+      top: 10,
+      right: 16,
+      left: 0,
+      bottom: 0
+    }
+  }, /*#__PURE__*/React.createElement(CartesianGrid, {
+    stroke: C.line,
+    strokeDasharray: "3 3"
+  }), /*#__PURE__*/React.createElement(XAxis, {
+    dataKey: "d",
+    fontSize: 13
+  }), /*#__PURE__*/React.createElement(YAxis, {
+    fontSize: 13,
+    unit: "%",
+    domain: [0, 100]
+  }), /*#__PURE__*/React.createElement(Tooltip, {
+    formatter: (v, name) => [`${v}%`, name]
+  }), RUN_TYPES.map(t => /*#__PURE__*/React.createElement(Bar, {
+    key: t,
+    dataKey: t,
+    stackId: "comp",
+    fill: TYPE_COLORS[t]
+  })))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: "4px 12px",
+      justifyContent: "center",
+      marginTop: 10,
+      fontSize: 12,
+      color: C.sub
+    }
+  }, RUN_TYPES.map(t => /*#__PURE__*/React.createElement("span", {
+    key: t
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      display: "inline-block",
+      width: 9,
+      height: 9,
+      borderRadius: 2,
+      background: TYPE_COLORS[t],
+      marginRight: 4
+    }
+  }), t)))), /*#__PURE__*/React.createElement(ChartCard, {
     title: `走行回数（${period === "week" ? "週4回が目標" : period === "month" ? "月別" : "年別"}）`
   }, /*#__PURE__*/React.createElement(ResponsiveContainer, {
     width: "100%",
