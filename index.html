@@ -7221,33 +7221,41 @@ ASICSラボ測定(4/5): 体脂肪17.5%(目標15%)、基礎代謝1415kcal、膝�
       background: C.card,
       border: `1px solid ${C.line}`,
       borderRadius: 10,
-      padding: "12px 16px",
-      flex: 1,
-      minWidth: 120
+      padding: "10px 8px",
+      flex: "1 1 0",
+      minWidth: 0
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
-      fontSize: 13,
+      fontSize: 11,
       color: C.sub,
-      letterSpacing: 1
+      letterSpacing: 0.5,
+      whiteSpace: "nowrap",
+      overflow: "hidden",
+      textOverflow: "ellipsis"
     }
   }, label), /*#__PURE__*/React.createElement("div", {
     style: {
-      fontSize: 28,
+      fontSize: 20,
       fontWeight: 700,
       fontVariantNumeric: "tabular-nums",
-      color: C.ink
+      color: C.ink,
+      whiteSpace: "nowrap"
     }
   }, value), sub && /*#__PURE__*/React.createElement("div", {
     style: {
-      fontSize: 13,
-      color: C.sub
+      fontSize: 11,
+      color: C.sub,
+      whiteSpace: "nowrap"
     }
   }, sub));
   const [xferMode, setXferMode] = useState(null); // "export" | "import" | null
   const [xferText, setXferText] = useState("");
   const openExport = () => {
-    setXferText(JSON.stringify(runs));
+    setXferText(JSON.stringify({
+      runs,
+      strength
+    }));
     setXferMode("export");
   };
   const openImport = () => {
@@ -7295,18 +7303,31 @@ ASICSラボ測定(4/5): 体脂肪17.5%(目標15%)、基礎代謝1415kcal、膝�
   const applyImportText = text => {
     try {
       const data = JSON.parse(text);
-      if (!Array.isArray(data) || data.length === 0) throw new Error();
-      setPendingImport(data); // モーダル内で確認表示
+      let runsData, strengthData;
+      if (Array.isArray(data)) {
+        runsData = data;
+        strengthData = {};
+      } // 旧形式（記録のみ）との互換
+      else if (data && Array.isArray(data.runs)) {
+        runsData = data.runs;
+        strengthData = data.strength && typeof data.strength === "object" ? data.strength : {};
+      } else throw new Error();
+      if (runsData.length === 0) throw new Error();
+      setPendingImport({
+        runs: runsData,
+        strength: strengthData
+      }); // モーダル内で確認表示
     } catch (_) {
       setMsg("JSONの読み込みに失敗しました。内容を確認してください");
       setTimeout(() => setMsg(""), 3000);
     }
   };
   const confirmImport = () => {
-    save(migrate(pendingImport));
+    save(migrate(pendingImport.runs));
+    saveStrength(pendingImport.strength || {});
+    setMsg(`${pendingImport.runs.length}件の記録と筋トレデータを取り込みました`);
     setPendingImport(null);
     setXferMode(null);
-    setMsg(`${pendingImport.length}件のデータを取り込みました`);
     setTimeout(() => setMsg(""), 3000);
   };
   const importRef = useRef(null);
@@ -7341,52 +7362,35 @@ ASICSラボ測定(4/5): 体脂肪17.5%(目標15%)、基礎代謝1415kcal、膝�
     style: {
       background: "#004C87",
       color: "#FFFFFF",
-      padding: "18px 20px"
+      padding: "14px 20px"
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
       maxWidth: 900,
-      margin: "0 auto",
+      margin: "0 auto"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
       display: "flex",
-      alignItems: "baseline",
-      gap: 14,
-      flexWrap: "wrap"
+      alignItems: "center",
+      justifyContent: "space-between",
+      flexWrap: "wrap",
+      gap: 8
     }
   }, /*#__PURE__*/React.createElement("h1", {
     style: {
       margin: 0,
       fontSize: 22,
       fontWeight: 800,
-      letterSpacing: 2
+      letterSpacing: 2,
+      lineHeight: 1.2
     }
   }, "RUN LOG ", /*#__PURE__*/React.createElement("span", {
     style: {
       color: C.accent
     }
   }, "/"), " SUB-4"), /*#__PURE__*/React.createElement("span", {
-    onClick: editRace,
-    title: "クリックしてレース名・開催日を変更",
     style: {
-      fontSize: 14,
-      opacity: 0.85,
-      cursor: "pointer"
-    }
-  }, race.name && race.date ? `${race.name}（${+race.date.slice(5, 7)}/${+race.date.slice(8, 10)}）まで ${daysToRace > 0 ? `${daysToRace}日` : "—"} ✎` : "レース未設定（ここをクリックして入力）✎"), /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 14,
-      opacity: 0.85
-    }
-  }, "・"), /*#__PURE__*/React.createElement("span", {
-    onClick: openTargetEdit,
-    title: "クリックしてMペースを変更",
-    style: {
-      fontSize: 14,
-      opacity: 0.85,
-      cursor: "pointer"
-    }
-  }, `目標 ${fmtDur(Math.round(target.paceSec * 42.195))}（Mペース ${fmtPace(target.paceSec)}/km）✎`), /*#__PURE__*/React.createElement("span", {
-    style: {
-      marginLeft: "auto",
       display: "flex",
       gap: 6
     }
@@ -7413,7 +7417,26 @@ ASICSラボ測定(4/5): 体脂肪17.5%(目標15%)、基礎代謝1415kcal、膝�
       if (e.target.files?.[0]) importJson(e.target.files[0]);
       e.target.value = "";
     }
-  })))), raceEdit && /*#__PURE__*/React.createElement("div", {
+  }))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      opacity: 0.85,
+      lineHeight: 1.5,
+      marginTop: 4
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    onClick: editRace,
+    title: "クリックしてレース名・開催日を変更",
+    style: {
+      cursor: "pointer"
+    }
+  }, race.name && race.date ? `${race.name}（${+race.date.slice(5, 7)}/${+race.date.slice(8, 10)}）まで ${daysToRace > 0 ? `${daysToRace}日` : "—"} ✎` : "レース未設定（ここをクリックして入力）✎"), " ・ ", /*#__PURE__*/React.createElement("span", {
+    onClick: openTargetEdit,
+    title: "クリックしてMペースを変更",
+    style: {
+      cursor: "pointer"
+    }
+  }, `目標 ${fmtDur(Math.round(target.paceSec * 42.195))}（Mペース ${fmtPace(target.paceSec)}/km）✎`)))), raceEdit && /*#__PURE__*/React.createElement("div", {
     onClick: () => setRaceEdit(false),
     style: {
       position: "fixed",
@@ -7689,7 +7712,7 @@ ASICSラボ測定(4/5): 体脂肪17.5%(目標15%)、基礎代謝1415kcal、膝�
       marginBottom: 8,
       lineHeight: 1.6
     }
-  }, xferMode === "export" ? "下のテキスト（全記録データ）をコピーし、もう一方のアプリの「読み込み」に貼り付けてください。" : "書き出したテキストを貼り付けるか、JSONファイルを選択してください。既存データは置き換えられます。"), /*#__PURE__*/React.createElement("textarea", {
+  }, xferMode === "export" ? "下のテキスト（走行記録・筋トレ記録すべて）をコピーし、もう一方のアプリの「読み込み」に貼り付けてください。" : "書き出したテキストを貼り付けるか、JSONファイルを選択してください。既存データは置き換えられます。"), /*#__PURE__*/React.createElement("textarea", {
     ref: xferRef,
     value: xferText,
     readOnly: xferMode === "export",
@@ -7786,7 +7809,7 @@ ASICSラボ測定(4/5): 体脂肪17.5%(目標15%)、基礎代謝1415kcal、膝�
       fontWeight: 700,
       color: C.ink
     }
-  }, pendingImport.length, "件で既存データを置き換えます。よろしいですか？"), /*#__PURE__*/React.createElement("button", {
+  }, pendingImport.runs.length, "件の記録（筋トレ記録 ", Object.keys(pendingImport.strength || {}).length, "日分を含む）で既存データを置き換えます。よろしいですか？"), /*#__PURE__*/React.createElement("button", {
     onClick: () => setPendingImport(null),
     style: {
       background: "transparent",
@@ -7818,18 +7841,18 @@ ASICSラボ測定(4/5): 体脂肪17.5%(目標15%)、基礎代謝1415kcal、膝�
   }, /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
-      gap: 10,
-      flexWrap: "wrap",
+      gap: 8,
+      flexWrap: "nowrap",
       marginBottom: 16
     }
   }, /*#__PURE__*/React.createElement(Stat, {
-    label: `月間走行距離（${calY}年${calM + 1}月）`,
-    value: `${monthKm.toFixed(1)} km`
+    label: `月間距離（${calM + 1}月）`,
+    value: `${monthKm.toFixed(1)}km`
   }), /*#__PURE__*/React.createElement(Stat, {
-    label: `年間走行距離（${calY}年）`,
-    value: `${yearKm.toFixed(1)} km`
+    label: `年間距離（${calY}年）`,
+    value: `${yearKm.toFixed(1)}km`
   }), /*#__PURE__*/React.createElement(Stat, {
-    label: `筋トレ実施率（月・水・金）`,
+    label: "筋トレ実施率",
     value: `${strengthMonthStat.pct}%`,
     sub: `${strengthMonthStat.total}回中${strengthMonthStat.done}回`
   })), /*#__PURE__*/React.createElement("div", {
