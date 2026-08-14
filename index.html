@@ -7860,7 +7860,7 @@ ASICSラボ測定(4/5): 体脂肪17.5%(目標15%)、基礎代謝1415kcal、膝�
   })), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
-      gap: 4,
+      gap: 2,
       marginBottom: 16,
       borderBottom: `2px solid ${C.line}`
     }
@@ -7868,13 +7868,15 @@ ASICSラボ測定(4/5): 体脂肪17.5%(目標15%)、基礎代謝1415kcal、膝�
     key: k,
     onClick: () => setTab(k),
     style: {
-      padding: "10px 18px",
+      flex: 1,
+      padding: "10px 4px",
       border: "none",
       cursor: "pointer",
-      fontSize: 16,
+      fontSize: 14,
       fontWeight: 600,
       background: "transparent",
       color: tab === k ? C.accent : C.sub,
+      whiteSpace: "nowrap",
       borderBottom: tab === k ? `3px solid ${C.accent}` : "3px solid transparent",
       marginBottom: -2
     }
