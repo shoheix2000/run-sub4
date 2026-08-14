@@ -7374,25 +7374,23 @@ ASICSラボ測定(4/5): 体脂肪17.5%(目標15%)、基礎代謝1415kcal、膝�
       display: "flex",
       alignItems: "center",
       justifyContent: "space-between",
-      flexWrap: "wrap",
+      flexWrap: "nowrap",
       gap: 8
     }
   }, /*#__PURE__*/React.createElement("h1", {
     style: {
       margin: 0,
-      fontSize: 22,
+      fontSize: 20,
       fontWeight: 800,
       letterSpacing: 2,
-      lineHeight: 1.2
+      lineHeight: 1.2,
+      whiteSpace: "nowrap"
     }
-  }, "RUN LOG ", /*#__PURE__*/React.createElement("span", {
-    style: {
-      color: C.accent
-    }
-  }, "/"), " SUB-4"), /*#__PURE__*/React.createElement("span", {
+  }, "RUN LOG"), /*#__PURE__*/React.createElement("span", {
     style: {
       display: "flex",
-      gap: 6
+      gap: 6,
+      flexShrink: 0
     }
   }, /*#__PURE__*/React.createElement("button", {
     onClick: openExport,
@@ -7422,7 +7420,11 @@ ASICSラボ測定(4/5): 体脂肪17.5%(目標15%)、基礎代謝1415kcal、膝�
       fontSize: 14,
       opacity: 0.85,
       lineHeight: 1.5,
-      marginTop: 4
+      marginTop: 6,
+      whiteSpace: "nowrap",
+      overflowX: "auto",
+      overflowY: "hidden",
+      WebkitOverflowScrolling: "touch"
     }
   }, /*#__PURE__*/React.createElement("span", {
     onClick: editRace,
@@ -8894,10 +8896,11 @@ const hdrBtn = {
   background: "transparent",
   border: "1px solid rgba(255,255,255,0.45)",
   borderRadius: 6,
-  padding: "4px 10px",
-  fontSize: 13,
+  padding: "4px 8px",
+  fontSize: 12,
   cursor: "pointer",
-  color: "#FFFFFF"
+  color: "#FFFFFF",
+  whiteSpace: "nowrap"
 };
 const navBtn = {
   background: "#FFFFFF",
